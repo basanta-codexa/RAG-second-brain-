@@ -13,3 +13,4 @@ python-multipart==0.0.33
 python-dotenv==1.2.4
 google-genai==2.34.0
 groq==1.7.0
+rank-bm25==0.2.2

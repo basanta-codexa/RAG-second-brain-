@@ -13,12 +13,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 import time
 from pathlib import Path
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from rank_bm25 import BM25Okapi
+from sentence_transformers import SentenceTransformer, CrossEncoder
 
 from loader import load_folder, SUPPORTED_SUFFIXES
 from chunker import chunk_records
@@ -116,6 +118,10 @@ def load_cache(fingerprint: str) -> tuple[list[dict], np.ndarray]:
     return chunks, blob["vectors"]
 
 
+def _tokenize(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
 def create_index(folder: str | list[str] = "data", model_name: str = DEFAULT_MODEL,
                  chunk_size: int = DEFAULT_CHUNK_SIZE, overlap: int = DEFAULT_OVERLAP,
                  rebuild: bool = False) -> dict:
@@ -128,11 +134,14 @@ def create_index(folder: str | list[str] = "data", model_name: str = DEFAULT_MOD
     fingerprint = corpus_fingerprint(folders)
     index_path, _ = _cache_paths(fingerprint)
 
+    def attach_bm25(chunks: list[dict]) -> BM25Okapi:
+        return BM25Okapi([_tokenize(c["text"]) for c in chunks])
+
     if not rebuild and cache_is_fresh(fingerprint, model_name, chunk_size, overlap):
         chunks, vectors = load_cache(fingerprint)
         print(f"cache hit: reused {len(chunks)} embeddings from {index_path}")
         return {"model_name": model_name, "chunks": chunks, "vectors": vectors,
-                "fingerprint": fingerprint, "encoder": None}
+                "fingerprint": fingerprint, "encoder": None, "bm25": attach_bm25(chunks)}
 
     print(f"loading files and chunking {', '.join(folders)}...")
     records = []
@@ -152,11 +161,40 @@ def create_index(folder: str | list[str] = "data", model_name: str = DEFAULT_MOD
     print(f"embedded {len(chunks)} chunks in {time.time() - t0:.1f}s")
     save_cache(chunks, vectors, fingerprint, model_name, chunk_size, overlap)
     return {"model_name": model_name, "chunks": chunks, "vectors": vectors,
-            "fingerprint": fingerprint, "encoder": model}
+            "fingerprint": fingerprint, "encoder": model, "bm25": attach_bm25(chunks)}
+
+
+def _ranks(scores: np.ndarray) -> np.ndarray:
+    """Position (0 = best) of each chunk in the ranking, for RRF."""
+    order = np.argsort(-scores, kind="stable")
+    ranks = np.empty(len(order), dtype=np.int64)
+    ranks[order] = np.arange(len(order))
+    return ranks
+
+
+_RRF_K = 60  # standard reciprocal-rank-fusion damping constant
+
+RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+RERANK_POOL = 20
+
+
+def _rank_order(index: dict, question: str, vector_scores: np.ndarray,
+                hybrid: bool) -> tuple[np.ndarray, np.ndarray]:
+    """Candidate ordering: fused if hybrid, pure vector otherwise."""
+    if hybrid and "bm25" in index:
+        q = _tokenize(question)
+        bm25_scores = np.array(index["bm25"].get_scores(q))
+        fused = (
+            1.0 / (_RRF_K + _ranks(vector_scores) + 1)
+            + 1.0 / (_RRF_K + _ranks(bm25_scores) + 1)
+        )
+        return np.argsort(-fused, kind="stable"), bm25_scores
+    return np.argsort(-vector_scores, kind="stable"), np.zeros(len(vector_scores))
 
 
 def query_index(index: dict, encoder: SentenceTransformer, question: str,
-                top_k: int = DEFAULT_TOP_K, use_prefix: bool | None = None) -> list[dict]:
+                top_k: int = DEFAULT_TOP_K, use_prefix: bool | None = None,
+                hybrid: bool = False, rerank: bool = False) -> list[dict]:
     if not question.strip():
         raise ValueError("question must not be empty")
     if use_prefix is None:
@@ -164,14 +202,49 @@ def query_index(index: dict, encoder: SentenceTransformer, question: str,
 
     q = (BGE_QUERY_PREFIX + question) if use_prefix else question
     q_vec = encoder.encode(q, normalize_embeddings=True)
-    scores = index["vectors"] @ q_vec
-    best = np.argsort(scores)[::-1][: min(top_k, len(scores))]
-    return [{**index["chunks"][i], "score": float(scores[i])} for i in best]
+    vector_scores = index["vectors"] @ q_vec
+    n = len(vector_scores)
+    k = min(top_k, n)
+
+    order, bm25_scores = _rank_order(index, question, vector_scores, hybrid)
+
+    if rerank:
+        pool = order[: min(RERANK_POOL, n)]
+        reranker = index.get("reranker")
+        if reranker is None:
+            reranker = CrossEncoder(RERANK_MODEL)
+            index["reranker"] = reranker
+        try:
+            pairs = [(question, index["chunks"][i]["text"]) for i in pool]
+            r_scores = np.asarray(reranker.predict(pairs), dtype=float)
+        except Exception as exc:
+            raise RuntimeError(f"reranker unavailable ({RERANK_MODEL}): {exc}") from exc
+        rerank_idx = np.argsort(-r_scores, kind="stable")[:k]
+        chosen = [pool[i] for i in rerank_idx]
+        return [
+            {**index["chunks"][i],
+             "score": float(vector_scores[i]),
+             "bm25_score": float(bm25_scores[i]),
+             "rerank_score": float(r_scores[j])}
+            for i, j in zip(chosen, rerank_idx)
+        ]
+
+    hits = []
+    for i in order[:k]:
+        hit = {**index["chunks"][i], "score": float(vector_scores[i]),
+               "bm25_score": float(bm25_scores[i])}
+        hits.append(hit)
+    return hits
 
 
 def print_hits(hits: list[dict]) -> None:
     for rank, r in enumerate(hits, start=1):
-        print(f"\n#{rank}  score {r['score']:.3f}  [{r['source']} | page {r['page']}]")
+        parts = [f"vector {r['score']:.3f}"]
+        if "bm25_score" in r:
+            parts.append(f"bm25 {r['bm25_score']:.2f}")
+        if "rerank_score" in r:
+            parts.append(f"rerank {r['rerank_score']:.3f}")
+        print(f"\n#{rank}  {'  '.join(parts)}  [{r['source']} | page {r['page']}]")
         print(r["text"][:300] + ("..." if len(r["text"]) > 300 else ""))
 
 
@@ -185,6 +258,10 @@ def main() -> int:
     parser.add_argument("--rebuild", action="store_true", help="ignore the embedding cache and re-embed")
     parser.add_argument("--no-query-prefix", action="store_true",
                         help="disable the BGE instruction prefix (default: auto-detected from model name)")
+    parser.add_argument("--hybrid", action="store_true",
+                        help="enable BM25+vector RRF fusion (measured to regress on some corpora — see README)")
+    parser.add_argument("--rerank", action="store_true",
+                        help=f"re-rank the top {RERANK_POOL} with cross-encoder ({RERANK_MODEL})")
     parser.add_argument("--question", help="ask a single question and exit (non-interactive)")
     args = parser.parse_args()
 
@@ -194,7 +271,8 @@ def main() -> int:
     use_prefix = False if args.no_query_prefix else None
 
     if args.question:
-        print_hits(query_index(index, encoder, args.question, args.top_k, use_prefix))
+        print_hits(query_index(index, encoder, args.question, args.top_k, use_prefix,
+                               hybrid=args.hybrid, rerank=args.rerank))
         return 0
 
     print("Enter a question (or 'quit' to exit).")
@@ -206,7 +284,8 @@ def main() -> int:
             break
         if q.lower() in ("quit", "exit", ""):
             break
-        print_hits(query_index(index, encoder, q, args.top_k, use_prefix))
+        print_hits(query_index(index, encoder, q, args.top_k, use_prefix,
+                               hybrid=args.hybrid, rerank=args.rerank))
     return 0
 
 
