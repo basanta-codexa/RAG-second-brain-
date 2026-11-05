@@ -4,7 +4,7 @@
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
-const state = { documents: 0 };
+const state = { documents: 0, allowAI: false };
 
 const el = {
   healthDot: $('#health-dot'),
@@ -26,6 +26,12 @@ const el = {
   results: $('#results'),
   emptyState: $('#empty-state'),
   hitTemplate: $('#hit-template'),
+  allowAi: $('#allow-ai'),
+  answerBtn: $('#answer-btn'),
+  answerPanel: $('#answer-panel'),
+  answerText: $('#answer-text'),
+  answerModel: $('#answer-model'),
+  sentList: $('#sent-list'),
 };
 
 const fmtBytes = (n) =>
@@ -248,6 +254,70 @@ el.questionForm.addEventListener('submit', async (event) => {
     await refreshStatus();
   }
 });
+
+/* ---------- grounded answers (Groq) ---------- */
+
+el.allowAi.addEventListener('change', () => {
+  if (el.allowAi.checked) {
+    const ok = window.confirm(
+      'Allow AI answers for this session?\n\n' +
+      'Passages retrieved for your question will be sent to api.groq.com\n' +
+      "(your GROQ_API_KEY — your quota). Full documents are never sent."
+    );
+    if (!ok) { el.allowAi.checked = false; return; }
+    state.allowAI = true;
+  } else {
+    state.allowAI = false;
+  }
+  el.answerBtn.disabled = !state.allowAI;
+});
+
+function renderAnswer(payload) {
+  el.answerPanel.hidden = false;
+  el.answerPanel.classList.toggle('refused', !!payload.refused);
+  el.answerText.textContent = payload.answer;
+  el.answerModel.textContent = payload.model || 'groq';
+  el.sentList.replaceChildren();
+  (payload.sent || []).forEach((item) => {
+    const li = document.createElement('li');
+    li.textContent =
+      `${item.rank}. ${item.source} · page ${item.page} · ${item.chars} chars · sim ${item.score.toFixed(3)}`;
+    el.sentList.appendChild(li);
+  });
+}
+
+async function requestAnswer() {
+  const question = el.question.value.trim();
+  if (question.length < 3) {
+    showNotice(el.askMsg, 'Ask at least three characters before requesting an answer.', true);
+    el.question.focus();
+    return;
+  }
+  clearNotice(el.askMsg);
+  el.answerBtn.disabled = true;
+  const prevLabel = el.answerBtn.textContent;
+  el.answerBtn.textContent = 'Asking Groq…';
+  setBusy('busy', 'Generating grounded answer', 'Answering…');
+
+  try {
+    const res = await fetch('/api/answer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, top_k: Number(el.topK.value), consent: true }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.detail || `answer failed (${res.status})`);
+    renderAnswer(payload);
+  } catch (err) {
+    showNotice(el.askMsg, err.message || 'Could not generate an answer.', true);
+  } finally {
+    el.answerBtn.textContent = prevLabel;
+    el.answerBtn.disabled = !state.allowAI;
+    await refreshStatus();
+  }
+}
+
+el.answerBtn.addEventListener('click', requestAnswer);
 
 /* ---------- boot ---------- */
 

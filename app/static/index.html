@@ -101,6 +101,15 @@
             placeholder="e.g. Which invariants should be defined before choosing a database?"
             required
           ></textarea>
+          <label class="consent-toggle" for="allow-ai">
+            <input type="checkbox" id="allow-ai" />
+            <span class="consent-track" aria-hidden="true"><span class="consent-knob"></span></span>
+            <span class="consent-text">
+              <strong>Allow AI answers this session</strong>
+              <small>Passages retrieved for your question will be sent to Groq to write a grounded answer. Full documents are never sent — only what the search returns.</small>
+            </span>
+          </label>
+
           <div class="form-footer">
             <div class="result-count">
               <label class="field-label" for="top-k">Passages</label>
@@ -111,11 +120,27 @@
                 <option value="10">10</option>
               </select>
             </div>
-            <button class="btn btn-primary btn-large" type="submit" id="ask-btn">Show evidence</button>
+            <div class="actions">
+              <button class="btn btn-secondary" type="button" id="answer-btn" disabled>Grounded answer</button>
+              <button class="btn btn-primary btn-large" type="submit" id="ask-btn">Show evidence</button>
+            </div>
           </div>
         </form>
 
         <p id="ask-message" class="notice" role="status" hidden></p>
+
+        <section id="answer-panel" class="answer-panel" hidden aria-live="polite" aria-label="Grounded answer">
+          <div class="answer-head">
+            <h3>Grounded answer</h3>
+            <span id="answer-model" class="mono answer-model"></span>
+          </div>
+          <p id="answer-text" class="answer-text"></p>
+          <details class="sent-details">
+            <summary>What was sent to Groq for this answer</summary>
+            <ul id="sent-list" class="sent-list"></ul>
+          </details>
+          <p class="answer-audit">Session consent on — nothing is sent until you click <em>Grounded answer</em>. Passages are deleted from Groq after inference per their policy; your key, your quota.</p>
+        </section>
 
         <ol id="results" class="results" aria-live="polite"></ol>
 
@@ -138,7 +163,7 @@
         </div>
 
         <p class="disclaimer">
-          Retrieval only — no answer is generated. If nothing relevant exists in the documents, the scores will be low and the passages off-topic. That is the honest result, not a failure.
+          Retrieval always runs first. Clicking <em>Grounded answer</em> sends only the retrieved passages to Groq — the model must answer strictly from them, cite <code>[1]</code> <code>[2]</code> inline, and refuse when the documents don't say. If nothing relevant exists, expect low scores and, optionally, an honest refusal — not an invented one.
         </p>
       </section>
     </main>
