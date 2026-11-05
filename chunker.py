@@ -1,25 +1,38 @@
+"""Split page-level records into overlapping, sentence-aware chunks."""
+from __future__ import annotations
+
+import argparse
+
 from loader import load_folder
 
 
 def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150) -> list[str]:
     """Split text into overlapping chunks, preferring to cut at sentence ends."""
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be > 0")
+    if overlap < 0:
+        raise ValueError("overlap must be >= 0")
+    if overlap >= chunk_size:
+        raise ValueError("overlap must be smaller than chunk_size")
+
     text = " ".join(text.split())  # collapse messy whitespace/newlines
-    chunks = []
+    chunks: list[str] = []
     start = 0
-    while start < len(text):
-        end = min(start + chunk_size, len(text))
+    n = len(text)
+    while start < n:
+        end = min(start + chunk_size, n)
 
         # try to end at a sentence boundary instead of mid-sentence
-        if end < len(text):
+        if end < n:
             cut = text.rfind(". ", start, end)
             if cut > start + chunk_size // 2:  # only if it's not too early
-                end = cut + 1
+                end = cut + 1  # keep the sentence-ending period with this chunk
 
         chunk = text[start:end].strip()
         if chunk:
             chunks.append(chunk)
 
-        if end >= len(text):
+        if end >= n:
             break
         start = end - overlap  # step back to create the overlap
     return chunks
@@ -27,9 +40,10 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150) -> list[str
 
 def chunk_records(records: list[dict], chunk_size: int = 800, overlap: int = 150) -> list[dict]:
     """Turn page-level records into chunk-level records, keeping metadata."""
-    all_chunks = []
+    all_chunks: list[dict] = []
     for rec in records:
-        for i, piece in enumerate(chunk_text(rec["text"], chunk_size, overlap)):
+        pieces = chunk_text(rec["text"], chunk_size, overlap)
+        for i, piece in enumerate(pieces):
             all_chunks.append({
                 "text": piece,
                 "source": rec["source"],
@@ -39,18 +53,29 @@ def chunk_records(records: list[dict], chunk_size: int = 800, overlap: int = 150
     return all_chunks
 
 
-if __name__ == "__main__":
-    CHUNK_SIZE = 300   # <- change only this line to experiment
-    OVERLAP = 150
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Preview chunking for a folder.")
+    parser.add_argument("--folder", default="data", help="folder to load (default: data)")
+    parser.add_argument("--chunk-size", type=int, default=800, help="chunk size in characters")
+    parser.add_argument("--overlap", type=int, default=150, help="overlap in characters")
+    parser.add_argument("--show", type=int, default=3, help="number of sample chunks to print")
+    args = parser.parse_args()
 
-    records = load_folder("data")
-    chunks = chunk_records(records, CHUNK_SIZE, OVERLAP)
+    records = load_folder(args.folder)
+    chunks = chunk_records(records, args.chunk_size, args.overlap)
     print(f"{len(records)} pages -> {len(chunks)} chunks")
+    if not chunks:
+        print("No chunks produced (nothing with readable text in the folder).")
+        return
+
     lengths = [len(c["text"]) for c in chunks]
-    print(
-        f"Chunk length: min {min(lengths)}, max {max(lengths)}, avg {sum(lengths)//len(lengths)}")
+    print(f"Chunk length: min {min(lengths)}, max {max(lengths)}, avg {sum(lengths) // len(lengths)}")
     print()
-    for c in chunks[:3]:
+    for c in chunks[: args.show]:
         print(f"[{c['chunk_id']}]")
         print(c["text"])
         print("-" * 40)
+
+
+if __name__ == "__main__":
+    main()
