@@ -1,5 +1,9 @@
 # Each item: a question, and the (source, page) pairs that hold the answer.
-# page=None means "any page of that source is fine".
+# page=None means "any page of that source is fine" and is reported as a
+# *lenient* match by evaluate.py -- prefer page-specific answers where possible.
+
+# Sources referenced below are expected under --folder (default: data). Tests
+# whose source is missing are skipped and reported, not silently dropped.
 
 TESTS = [
     # System Design Interview Playbook
