@@ -19,7 +19,9 @@ from groq import Groq
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-DEFAULT_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+# llama-3.3-70b-versatile is Enterprise-only on Groq — 404 for free-tier keys.
+# gpt-oss-120b is the strongest free Developer-plan model for grounded answers.
+DEFAULT_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 MAX_PASSAGE_CHARS = 1200
 MAX_TOTAL_CHARS = 6000
 MAX_ANSWER_TOKENS = 512

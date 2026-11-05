@@ -150,7 +150,9 @@ What you get, end to end:
   model. Expand **What was sent to Groq** to inspect it.
 - Requires `GROQ_API_KEY` in `.env` (free tier at console.groq.com/keys).
   Without it, generation returns a clear error and the rest of the UI is unaffected.
-  Override the model with `GROQ_MODEL` if your account offers different models.
+  Default model: `openai/gpt-oss-120b` (free Developer tier). Override with
+  `GROQ_MODEL`, e.g. `openai/gpt-oss-20b` — note Groq's `llama-3.3-70b-versatile`
+  is Enterprise-only, producing 404 on free-tier keys.
 
 Endpoints if you prefer the API: `GET /api/status`, `POST /api/upload`,
 `DELETE /api/uploads/<name>`, `POST /api/uploads/clear`, `POST /api/search`,
