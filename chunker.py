@@ -43,12 +43,14 @@ def chunk_records(records: list[dict], chunk_size: int = 800, overlap: int = 150
     all_chunks: list[dict] = []
     for rec in records:
         pieces = chunk_text(rec["text"], chunk_size, overlap)
+        origin = rec.get("origin") or rec["source"]
         for i, piece in enumerate(pieces):
             all_chunks.append({
                 "text": piece,
                 "source": rec["source"],
                 "page": rec["page"],
-                "chunk_id": f"{rec['source']}-p{rec['page']}-c{i}",
+                "chunk_id": f"{origin}-p{rec['page']}-c{i}",
+                "origin": origin,
             })
     return all_chunks
 

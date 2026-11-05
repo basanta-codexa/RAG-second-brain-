@@ -60,6 +60,10 @@ def load_text(path: Path) -> list[dict]:
 def load_folder(folder: str, strict: bool = True) -> list[dict]:
     """Load every supported file in *folder* (non-recursive).
 
+    Each record gains an ``origin`` field ("<folder-basename>/<file>") so
+    chunk IDs are stable across machines and unique across folders
+    (``data/notes.md`` vs ``uploads/notes.md``).
+
     With strict=True (default) an unreadable file aborts the load instead of
     silently dropping content. Set strict=False to log-and-continue.
     """
@@ -67,6 +71,7 @@ def load_folder(folder: str, strict: bool = True) -> list[dict]:
     if not root.is_dir():
         raise FileNotFoundError(f"data folder not found: {root}")
 
+    origin = root.name
     records: list[dict] = []
     for path in sorted(root.iterdir()):
         suffix = path.suffix.lower()
@@ -81,6 +86,8 @@ def load_folder(folder: str, strict: bool = True) -> list[dict]:
             if strict:
                 raise
             print(f"ERROR: {exc} -- skipping file")
+    for record in records:
+        record["origin"] = f"{origin}/{record['source']}"
     return records
 
 
