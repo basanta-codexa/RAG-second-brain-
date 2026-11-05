@@ -18,9 +18,11 @@ Configuration (environment variables):
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -35,15 +37,24 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 ALLOWED_EXTENSIONS = frozenset(SUPPORTED_SUFFIXES)
 
 
+Mode = Literal["vector", "hybrid", "rerank"]
+
+
 class SearchRequest(BaseModel):
     question: str = Field(min_length=3, max_length=2000)
     top_k: int = Field(default=srch.DEFAULT_TOP_K, ge=1, le=10)
+    mode: Mode = "vector"
+    source: str | None = Field(default=None, max_length=120,
+                               pattern=r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,119}$")
 
 
 class AnswerRequest(BaseModel):
     question: str = Field(min_length=3, max_length=2000)
     top_k: int = Field(default=srch.DEFAULT_TOP_K, ge=1, le=10)
     consent: bool  # must be True; the UI sets it from the session-wide toggle
+    mode: Mode = "vector"
+    source: str | None = Field(default=None, max_length=120,
+                               pattern=r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,119}$")
 
 
 def sanitize_filename(raw: str) -> str:
@@ -75,6 +86,15 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
     upload_path = Path(upload_dir or os.getenv("SECOND_BRAIN_UPLOADS", "uploads"))
     model = model_name or os.getenv("SECOND_BRAIN_MODEL", srch.DEFAULT_MODEL)
     max_bytes = (int(max_mb or os.getenv("SECOND_BRAIN_MAX_MB", "25")) * 1024 * 1024)
+
+    # Loading PyTorch + 400 MB of weights takes ~8s — do it once per process,
+    # and reuse it for every query (not every request).
+    _encoder_cache: dict = {"instance": None}
+
+    def get_encoder() -> srch.SentenceTransformer:
+        if _encoder_cache["instance"] is None:
+            _encoder_cache["instance"] = srch.SentenceTransformer(model)
+        return _encoder_cache["instance"]
 
     data_path.mkdir(parents=True, exist_ok=True)
     upload_path.mkdir(parents=True, exist_ok=True)
@@ -113,6 +133,7 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
     @app.get("/api/status")
     def status() -> dict:
         base, uploads = supported_files(data_path), supported_files(upload_path)
+        names = sorted({f["name"] for f in base} | {f["name"] for f in uploads})
         return {
             "base": [f for f in base],
             "uploads": [f for f in uploads],
@@ -120,7 +141,18 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             "model": model,
             "max_mb": max_bytes // (1024 * 1024),
             "max_upload_bytes": max_bytes,
+            "sources": names,
         }
+
+    @app.get("/api/index-status")
+    def index_status() -> dict:
+        progress_file = srch.PROGRESS_PATH
+        if not progress_file.exists():
+            return {"active": False}
+        try:
+            return json.loads(progress_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"active": False}
 
     # ---------- upload / clear ----------
 
@@ -175,27 +207,35 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
     def build_index_or_fail():
         corpus = corpus_or_400()
         index = srch.create_index([str(data_path), str(upload_path)], model)
-        encoder = index["encoder"] or srch.SentenceTransformer(model)
+        encoder = index["encoder"] or get_encoder()
         return corpus, index, encoder
+
+    def mode_kwargs(mode: Mode) -> dict:
+        return {"hybrid": mode == "hybrid", "rerank": mode == "rerank"}
 
     # ---------- search ----------
 
     @app.post("/api/search")
     def search_endpoint(req: SearchRequest) -> dict:
         corpus, index, encoder = build_index_or_fail()
-        hits = srch.query_index(index, encoder, req.question, top_k=req.top_k)
+        hits = srch.query_index(index, encoder, req.question, top_k=req.top_k,
+                                source=req.source, **mode_kwargs(req.mode))
 
-        items = [
-            {
+        items = []
+        for i, h in enumerate(hits):
+            item = {
                 "rank": i + 1,
                 "score": round(h["score"], 4),
                 "source": h["source"],
                 "page": h["page"],
                 "chunk_id": h["chunk_id"],
+                "origin": h.get("origin", ""),
                 "text": h["text"],
             }
-            for i, h in enumerate(hits)
-        ]
+            for extra in ("bm25_score", "rerank_score"):
+                if extra in h:
+                    item[extra] = round(float(h[extra]), 4)
+            items.append(item)
         return {
             "hits": items,
             "cached_index": index["encoder"] is None,
@@ -214,7 +254,8 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             )
 
         corpus, index, encoder = build_index_or_fail()
-        hits = srch.query_index(index, encoder, req.question, top_k=req.top_k)
+        hits = srch.query_index(index, encoder, req.question, top_k=req.top_k,
+                                source=req.source, **mode_kwargs(req.mode))
 
         try:
             result = generate.answer(req.question, hits)
