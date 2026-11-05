@@ -61,3 +61,41 @@ def test_search_on_empty_corpus_returns_409(client):
 
 def test_delete_missing_upload_returns_404(client):
     assert client.delete("/api/uploads/nope.txt").status_code == 404
+
+
+def test_answer_requires_consent(client):
+    res = client.post("/api/answer", json={"question": "hello there", "top_k": 3, "consent": False})
+    assert res.status_code == 403
+
+
+def test_answer_empty_corpus_returns_409(client):
+    res = client.post("/api/answer", json={"question": "hello there", "top_k": 3, "consent": True})
+    assert res.status_code == 409
+
+
+def test_answer_success_with_mocked_provider(monkeypatch, client):
+    client.post("/api/upload",
+                files={"file": ("notes.txt", b"copper vault Oslo archives answer text", "text/plain")})
+
+    fake_hits = [
+        {"text": "copper vault Oslo archives answer text", "source": "notes.txt",
+         "page": 1, "chunk_id": "notes.txt-p1-c0", "score": 0.91},
+    ]
+    fake_index = {"model_name": "mock-model", "fingerprint": "x", "encoder": object()}
+    monkeypatch.setattr("app.main.srch.create_index", lambda *a, **kw: fake_index)
+    monkeypatch.setattr("app.main.srch.query_index", lambda *a, **kw: fake_hits)
+    monkeypatch.setattr(
+        "app.main.generate.answer",
+        lambda question, hits, model=None: {
+            "answer": "Oslo keeps it in a copper vault. [1]",
+            "model": "mock-model",
+            "sent": [{"rank": 1, "source": "notes.txt", "page": 1, "score": 0.91, "chars": 38}],
+            "refused": False,
+        },
+    )
+    res = client.post("/api/answer", json={"question": "where is the vault", "top_k": 1, "consent": True})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["answer"] == "Oslo keeps it in a copper vault. [1]"
+    assert body["sent"][0]["source"] == "notes.txt"
+    assert body["documents"] == 1
