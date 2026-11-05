@@ -31,9 +31,10 @@ class FakeStore:
         self._chunks = chunks
         self._vectors = vectors
 
-    def search(self, vector, limit):
+    def search(self, vector, limit, source=None):
         v = np.asarray(vector, dtype=np.float32)
-        scored = [(float(self._vectors[i] @ v), i) for i in range(len(self._chunks))]
+        idx = [i for i, c in enumerate(self._chunks) if source is None or c["source"] == source]
+        scored = [(float(self._vectors[i] @ v), i) for i in idx]
         scored.sort(key=lambda item: -item[0])
         return [
             {**self._chunks[i], "origin": "test/x", "score": score}
@@ -43,9 +44,11 @@ class FakeStore:
     def count(self):
         return len(self._chunks)
 
-    def scroll_all(self, with_vectors=False, limit=512):
+    def scroll_all(self, with_vectors=False, limit=512, source=None):
         rows = []
         for i, chunk in enumerate(self._chunks):
+            if source and chunk["source"] != source:
+                continue
             row = {"id": i, "origin": "test/x", **chunk}
             if with_vectors:
                 row["vector"] = self._vectors[i].tolist()
