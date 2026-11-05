@@ -12,8 +12,9 @@ using Google's Gemini vision model. Bring your own API key.
 ## What it does
 
 - PDF (PyMuPDF/pypdf) and `.md`/`.txt` ingestion; page-aware chunking with overlap
-- Embeds with `sentence-transformers` (bge-base by default) — cached by content hash under `.cache/`
-- Cosine top-k retrieval; `search.py` for CLI, web UI for interactive use
+- Embeds with `sentence-transformers` (bge-base by default), stored in **Qdrant** (Docker)
+- Cosine top-k retrieval via Qdrant; `search.py` for CLI, web UI for interactive use
+- **Incremental indexing**: each file is content-hashed; only new/changed files are re-embedded
 - Evaluation suite (`evaluate.py`): hit@1 / hit@k / MRR, reports MRR and flags tests whose source file is missing
 - Grounded answers via Groq (opt-in per session): `[1]`-style citations, inline,
   partial answers when only part is supported; refusal sentence otherwise
@@ -21,25 +22,25 @@ using Google's Gemini vision model. Bring your own API key.
 
 ## What it does not do
 
-- No vector database or ANN index (brute-force dot product; fine at this scale)
 - No hybrid search by default — tests on this corpus showed it performs worse
 - No answer generation without your explicit session consent and a Groq key
 
 ## Layout
 
 ```
-loader.py      reads PDFs/MD/TXT into page records
-chunker.py     records -> overlapping, sentence-aware chunks (with chunk_id)
-search.py      embed -> cache -> cosine top-k
-evaluate.py    hit@1 / hit@k / MRR on your testset
-transcribe.py  handwritten-notes PDF -> Markdown (resumable)
-testset.py     retrieval questions with expected (source, page) answers
-app/           FastAPI service + vanilla HTML/CSS/JS UI
-data/          your corpus (gitignored)
-uploads/       files you upload through the UI (gitignored)
-transcripts/   OCR page cache (gitignored)
-.cache/        embedding cache (gitignored)
-tests/         pytest suite
+loader.py        reads PDFs/MD/TXT into page records
+chunker.py       records -> overlapping, sentence-aware chunks (chunk_id = origin/file)
+qdrant_store.py  Qdrant connection, incremental per-file index planner, state
+search.py        embed (only changed files) -> upsert -> cosine top-k via Qdrant
+evaluate.py      hit@1 / hit@k / MRR on your testset
+transcribe.py    handwritten-notes PDF -> Markdown (resumable)
+testset.py       retrieval questions with expected (source, page) answers
+app/             FastAPI service + vanilla HTML/CSS/JS UI
+data/            your corpus (gitignored)
+uploads/         files you upload through the UI (gitignored)
+transcripts/     OCR page cache (gitignored)
+.cache/          incremental-index state (qdrant_state.json) (gitignored)
+tests/           pytest suite
 ```
 
 Markdown files can encode pages with `<<<PAGE n>>>` markers. Content before
@@ -48,9 +49,17 @@ page numbers.
 
 ## Setup
 
-Python 3.11+ (developed on Windows).
+Requires Python 3.11+ (developed on Windows) and **Docker** for Qdrant.
 
 ```powershell
+# 0. Start Qdrant (one-time; persists data under C:\Users\<you>\.qdrant\storage)
+docker run -d --name second-brain-qdrant --restart unless-stopped `
+  -p 6333:6333 -p 6334:6334 `
+  -v "${env:USERPROFILE}\.qdrant\storage:/qdrant/storage" qdrant/qdrant
+
+# already created it once? just make sure it's running:
+#   docker start second-brain-qdrant
+
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 
@@ -60,6 +69,9 @@ python -m pip install -r requirements-dev.txt   # unit tests only
 
 copy .env.example .env     # then fill in keys; .env is gitignored
 ```
+
+If Qdrant is down or unreachable, every command fails fast with a message
+telling you to `docker start second-brain-qdrant`. There is no silent fallback.
 
 Keys: `GEMINI_API_KEY` (handwriting OCR), `GROQ_API_KEY` (AI answers, optional).
 `transcribe.py` and the web bench read `.env` automatically; an existing
@@ -97,7 +109,7 @@ python -m uvicorn app.main:app --port 8000
 ```
 
 1. Drop in a `.pdf`, `.md` or `.txt` (25 MB max). One file at a time; same name replaces.
-2. The index rebuilds on the next query (CPU-bound; ~1–2 min on first run, then cached).
+2. The index syncs on the next query — only changed files are re-embedded (first ever run embeds the corpus once).
 3. Ask questions; results show source, page, similarity score, and the chunk text.
 
 AI answer toggle: **Allow AI answers this session**. When on, clicking
@@ -129,18 +141,16 @@ corpora may differ; rerun `evaluate.py` against your own to see.
 
 ## Known limits
 
-1. Retrieval is brute-force dot product over ~hundreds of chunks — fine here,
-   not a database.
-2. Any edit to the corpus re-embeds everything (fingerprint is content hash).
-   There is no incremental per-file indexing.
-3. Character-based chunking (nearest `. ` boundary). PDF layout, tables and
+1. The Qdrant collection and `.cache/qdrant_state.json` are the index. If the
+   container or its storage is removed, the first run rebuilds the whole index
+   (~1–2 min on this corpus). Keep `~\.qdrant\storage` backed up if your notes matter.
+2. Character-based chunking (nearest `. ` boundary). PDF layout, tables and
    math can extract poorly; handwritten PDFs need `transcribe.py` first.
-4. AI answers are expendable, not authoritative. A missing passage means either
-   an incomplete answer — check the citations.
-5. No license. All rights reserved.
+3. AI answers are expendable, not authoritative. A missing passage means
+   either an incomplete answer — check the citations.
+4. No license. All rights reserved.
 
 ## Roadmap
 
-- Persistent ANN index (FAISS or sqlite-vec)
 - CI: pytest + lint on GitHub Actions
 - Better table and math extraction
