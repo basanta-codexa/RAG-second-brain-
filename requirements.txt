@@ -12,3 +12,4 @@ uvicorn[standard]==0.54.0
 python-multipart==0.0.33
 python-dotenv==1.2.4
 google-genai==2.34.0
+groq==1.7.0
