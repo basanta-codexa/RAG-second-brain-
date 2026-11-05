@@ -2,8 +2,10 @@
 
 A small, honest **retrieval** pipeline: it indexes your own PDFs / Markdown / text
 into an embedding vector space and returns the most relevant passages for a
-question, with file and page provenance. It does **not** generate answers yet —
-by design it shows you the evidence instead of hallucinating one.
+question, with file and page provenance. Answer generation is **opt-in**: with
+your Groq key and a per-session consent toggle, it writes answers strictly
+grounded in the retrieved passages, cites them inline, and refuses when the
+documents don't say. The default experience is evidence-first.
 
 Optional: transcribe handwritten study notes (photos of a PDF) into clean
 Markdown using Google's Gemini vision model, bringing your own API key.
@@ -12,12 +14,13 @@ Markdown using Google's Gemini vision model, bringing your own API key.
 
 | Works today | Not implemented yet |
 | --- | --- |
-| PDF (PyMuPDF/pypdf) and `.md`/`.txt` ingestion | Answer generation / LLM synthesis |
-| Page-aware chunking with overlap | Vector database / ANN at scale |
-| Cosine top-k retrieval with sentence-transformers (bge-base by default) | Hybrid keyword+vector retrieval |
-| Persistent embedding cache (`.cache/`, content-hash keyed) | Incremental per-file re-indexing |
-| Optional handwritten-notes transcription via Gemini | Any form of cloud upload/sync of your notes |
+| PDF (PyMuPDF/pypdf) and `.md`/`.txt` ingestion | Vector database / ANN at scale |
+| Page-aware chunking with overlap | Hybrid keyword+vector retrieval |
+| Cosine top-k retrieval with sentence-transformers (bge-base by default) | Incremental per-file re-indexing |
+| Persistent embedding cache (`.cache/`, content-hash keyed) | Any form of cloud upload/sync of your notes |
+| Optional handwritten-notes transcription via Gemini | — |
 | Honest evaluation: hit@1, hit@k, MRR, missing-source skips | — |
+| Grounded AI answers via Groq — session consent, `[1]`-style citations, refuses when the documents don't say | — |
 
 ## How it fits together
 
@@ -71,11 +74,12 @@ python -m venv venv
 python -m pip install -r requirements.txt
 python -m pip install -r requirements-dev.txt   # needed only for the unit tests
 
-# 3. (Optional, only for transcribe.py) set your Gemini API key
+# 3. (Optional) set your API keys
 copy .env.example .env                # then edit .env — never commit it
 ```
 
-`transcribe.py` loads `GEMINI_API_KEY` from the project `.env` file automatically.
+`transcribe.py` and the web bench load keys from the project `.env` file automatically
+(`GEMINI_API_KEY` for handwriting OCR, `GROQ_API_KEY` for grounded answers).
 An already-set environment variable takes precedence.
 
 ## Usage
@@ -134,18 +138,39 @@ What you get, end to end:
 3. **Ask** a question (3–2000 characters, 1–10 passages) and read the evidence —
    scores, source file, page, and the raw chunk text with expand/collapse.
 
+**Grounded AI answers (opt-in, via Groq)**
+
+- Flip **Allow AI answers this session** — you'll be asked to confirm exactly
+  what that means (retrieved passages are sent to `api.groq.com` using your key;
+  full documents are never sent). The setting expires when the page reloads.
+- Click **Grounded answer**. The model must answer *only* from the retrieved
+  passages, cite `[1]`, `[2]` inline, and otherwise reply
+  `I don't know — the documents don't answer this.`
+- Every answer ships with an audit line: what was sent, how big it was, which
+  model. Expand **What was sent to Groq** to inspect it.
+- Requires `GROQ_API_KEY` in `.env` (free tier at console.groq.com/keys).
+  Without it, generation returns a clear error and the rest of the UI is unaffected.
+  Override the model with `GROQ_MODEL` if your account offers different models.
+
 Endpoints if you prefer the API: `GET /api/status`, `POST /api/upload`,
-`DELETE /api/uploads/<name>`, `POST /api/uploads/clear`, `POST /api/search`.
+`DELETE /api/uploads/<name>`, `POST /api/uploads/clear`, `POST /api/search`,
+`POST /api/answer` (requires `"consent": true` in the body — enforced server-side).
 Configuration via `SECOND_BRAIN_DATA`, `SECOND_BRAIN_UPLOADS`,
-`SECOND_BRAIN_MODEL`, `SECOND_BRAIN_MAX_MB`.
+`SECOND_BRAIN_MODEL`, `SECOND_BRAIN_MAX_MB`, `GROQ_MODEL`.
 
 The UI is a **local test harness**, not a hosted product — do not expose it
 on the network; the upload endpoint trusts your local filesystem boundaries.
 
 ## Honest limitations (no sugarcoating)
 
-1. **It retrieves; it does not answer.** If the chunk isn't in the top-k, the tool
-   shows you nothing useful instead of inventing an answer.
+1. **AI answers exist but are opt-in and expendable.** Retrieval is the core;
+   the Groq answer is a layer on top. If retrieval misses, generation will
+   refuse (by design) rather than invent — but the quality of that refusal
+   still depends on the top-k you picked.
+2. **Only retrieved passages leave your machine** (when you enable AI answers),
+   and only with the session consent toggle on. Your whole library is never
+   bulk-uploaded. You still must read Groq's and Google's free-tier terms
+   before putting anything sensitive through them.
 2. **Re-embeds when content changes.** The cache fingerprints file contents —
    any edit re-embeds the whole corpus. Fine at personal scale; use an ANN index
    for large corpora.
@@ -159,9 +184,10 @@ on the network; the upload endpoint trusts your local filesystem boundaries.
 
 ## Privacy and secrets
 
-- `.env` is gitignored and **never** committed. `transcribe.py` loads the key
-  from this file; `.env.example` ships as a placeholder.
-- `data/`, `transcripts/`, `*.pdf` at the repo root, and `.cache/` are ignored.
+- `.env` is gitignored and **never** committed. `transcribe.py` and the web
+  bench load keys from this file; `.env.example` ships as a placeholder.
+- `data/`, `transcripts/`, `uploads/`, `*.pdf` at the repo root, and `.cache/`
+  are ignored.
 - The repo ships no documents at all, by design.
 
 ## License
@@ -171,7 +197,6 @@ permission.
 
 ## Roadmap
 
-- Answer synthesis with strict source citation (and an "I don't know" fallback)
 - FAISS or sqlite-vec backed persistent vector index
 - BM25 + vector hybrid retrieval; cross-encoder reranking
 - GitHub Actions CI (pytest + lint)
