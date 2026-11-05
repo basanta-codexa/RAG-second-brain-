@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 import time
@@ -29,12 +30,28 @@ DEFAULT_MODEL = "BAAI/bge-base-en-v1.5"
 DEFAULT_CHUNK_SIZE = 800      # BGE-en reads ~512 tokens; keep chunks modest
 DEFAULT_OVERLAP = 150
 DEFAULT_TOP_K = 3
+PROGRESS_PATH = Path(".cache") / "index_progress.json"
 
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 
 def _tokenize(text: str) -> list[str]:
     return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def _write_progress(**fields) -> None:
+    PROGRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fields = {"at": round(time.time(), 3), **fields}
+    tmp = PROGRESS_PATH.with_suffix(PROGRESS_PATH.suffix + ".tmp")
+    tmp.write_text(json.dumps(fields), encoding="utf-8")
+    tmp.replace(PROGRESS_PATH)
+
+
+def _clear_progress() -> None:
+    try:
+        PROGRESS_PATH.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def _target_files(folders: list[str]) -> dict[str, Path]:
@@ -65,17 +82,32 @@ def _embed_files(store: Store, files: list[tuple[str, Path]], model_name: str,
                  chunk_size: int, overlap: int) -> dict[str, dict]:
     if not files:
         return {}
-    print(f"embedding {len(files)} changed file(s) with {model_name} ...")
-    model = SentenceTransformer(model_name)
-    done: dict[str, dict] = {}
-    for key, path in files:
+
+    # Phase 1: read + chunk everything first, so the total is known up front
+    prepared = []
+    total_chunks = 0
+    for i, (key, path) in enumerate(files, start=1):
+        _write_progress(active=True, stage="reading", file_index=i,
+                        files_total=len(files), current_file=key,
+                        chunks_done=0, chunks_total=None)
         records = _load_one(path, key)
         hashed = sha256_file(path)
         chunks = chunk_records(records, chunk_size, overlap)
+        total_chunks += len(chunks)
+        prepared.append((key, hashed, chunks))
+
+    print(f"embedding {total_chunks} chunks from {len(prepared)} file(s) with {model_name} ...")
+    model = SentenceTransformer(model_name)
+    done: dict[str, dict] = {}
+    embedded_so_far = 0
+    for i, (key, hashed, chunks) in enumerate(prepared, start=1):
         if not chunks:
             print(f"  {key}: nothing readable, skipped")
             done[key] = {"sha256": hashed, "point_ids": []}
             continue
+        _write_progress(active=True, stage="embedding", file_index=i,
+                        files_total=len(prepared), current_file=key,
+                        chunks_done=embedded_so_far, chunks_total=total_chunks)
         t0 = time.time()
         vectors = model.encode(
             [c["text"] for c in chunks],
@@ -84,6 +116,7 @@ def _embed_files(store: Store, files: list[tuple[str, Path]], model_name: str,
         )
         store.create(vector_size=vectors.shape[1])
         ids = store.upsert(chunks, vectors)
+        embedded_so_far += len(chunks)
         done[key] = {"sha256": hashed, "point_ids": ids}
         print(f"  {key}: {len(chunks)} chunks in {time.time() - t0:.1f}s")
     return done
@@ -120,8 +153,12 @@ def create_index(folder: str | list[str] = "data", model_name: str = DEFAULT_MOD
 
     new_state = plan_result["state"]
     to_embed_keys = plan_result["to_embed"]
-    updates = _embed_files(store, [(k, files[k]) for k in to_embed_keys],
-                           model_name, chunk_size, overlap)
+    _clear_progress()  # drop stale progress from any crashed run
+    try:
+        updates = _embed_files(store, [(k, files[k]) for k in to_embed_keys],
+                               model_name, chunk_size, overlap)
+    finally:
+        _clear_progress()
     new_state["files"].update(updates)
     store.save_state(new_state)
 
@@ -141,13 +178,6 @@ def create_index(folder: str | list[str] = "data", model_name: str = DEFAULT_MOD
 
 
 # ---------- query ----------
-
-def _scroll_vectors(store: Store) -> dict[str, np.ndarray]:
-    out = {}
-    for row in store.scroll_all(with_vectors=True):
-        out[row["chunk_id"]] = np.array(row["vector"], dtype=np.float32)
-    return out
-
 
 _RRF_K = 60
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -169,7 +199,8 @@ def _rrf_order(rows: list[dict], vector_scores: np.ndarray,
 
 def query_index(index: dict, encoder: SentenceTransformer, question: str,
                 top_k: int = DEFAULT_TOP_K, use_prefix: bool | None = None,
-                hybrid: bool = False, rerank: bool = False) -> list[dict]:
+                hybrid: bool = False, rerank: bool = False,
+                source: str | None = None) -> list[dict]:
     question = question.strip()
     if not question:
         raise ValueError("question must not be empty")
@@ -187,21 +218,32 @@ def query_index(index: dict, encoder: SentenceTransformer, question: str,
         raise RuntimeError("collection empty — nothing to search")
     k = min(top_k, total)
 
-    if hybrid and index.get("bm25") is not None:
-        vec_by_id = _scroll_vectors(store)
-        vectors = np.array([vec_by_id[c["chunk_id"]] for c in chunks])
+    if hybrid:
+        rows = store.scroll_all(with_vectors=True, source=source)
+        if not rows:
+            return []
+        if source:
+            scoped_bm25 = BM25Okapi([_tokenize(r["text"]) for r in rows])
+        else:
+            scoped_bm25 = index.get("bm25")
+            if scoped_bm25 is None:
+                scoped_bm25 = BM25Okapi([_tokenize(r["text"]) for r in rows])
+
+        vectors = np.array([r["vector"] for r in rows], dtype=np.float32)
         vector_scores = vectors @ q_vec
-        bm25_scores = np.array(index["bm25"].get_scores(_tokenize(question)))
-        order = _rrf_order(chunks, vector_scores, bm25_scores)
-        order = order[:k]
+        bm25_scores = np.array(scoped_bm25.get_scores(_tokenize(question)))
+        order = _rrf_order(rows, vector_scores, bm25_scores)[:k]
         return [
-            {**chunks[i], "score": float(vector_scores[i]),
+            {**{key: val for key, val in rows[i].items() if key != "vector"},
+             "score": float(vector_scores[i]),
              "bm25_score": float(bm25_scores[i])}
             for i in order
         ]
 
     if rerank:
-        pool = store.search(q_vec, limit=min(RERANK_POOL, total))
+        pool = store.search(q_vec, limit=min(RERANK_POOL, total), source=source)
+        if not pool:
+            return []
         reranker = index.get("reranker")
         if reranker is None:
             reranker = CrossEncoder(RERANK_MODEL)
@@ -217,7 +259,7 @@ def query_index(index: dict, encoder: SentenceTransformer, question: str,
             hits.append({**pool[j], "rerank_score": float(r_scores[j])})
         return hits
 
-    return store.search(q_vec, limit=k)
+    return store.search(q_vec, limit=k, source=source)
 
 
 def print_hits(hits: list[dict]) -> None:
@@ -245,6 +287,7 @@ def main() -> int:
     parser.add_argument("--rerank", action="store_true",
                         help=f"re-rank with cross-encoder ({RERANK_MODEL})")
     parser.add_argument("--question", help="ask one question and exit")
+    parser.add_argument("--source", help="restrict retrieval to one filename (e.g. notes.md)")
     args = parser.parse_args()
 
     index = create_index(args.folder, args.model,
@@ -254,7 +297,7 @@ def main() -> int:
 
     if args.question:
         print_hits(query_index(index, encoder, args.question, args.top_k, use_prefix,
-                               hybrid=args.hybrid, rerank=args.rerank))
+                               hybrid=args.hybrid, rerank=args.rerank, source=args.source))
         return 0
 
     print("Enter a question (or 'quit' to exit).")
@@ -267,7 +310,7 @@ def main() -> int:
         if q.lower() in ("quit", "exit", ""):
             break
         print_hits(query_index(index, encoder, q, args.top_k, use_prefix,
-                               hybrid=args.hybrid, rerank=args.rerank))
+                               hybrid=args.hybrid, rerank=args.rerank, source=args.source))
     return 0
 
 

@@ -175,12 +175,17 @@ class Store:
 
     # ---------- reads ----------
 
-    def search(self, vector, limit: int):
+    def search(self, vector, limit: int, source: str | None = None):
+        query_filter = (
+            Filter(must=[FieldCondition(key="source", match=MatchValue(value=source))])
+            if source else None
+        )
         response = self.client.query_points(
             collection_name=self.collection,
             query=[float(x) for x in vector],
             limit=limit,
             with_payload=True,
+            query_filter=query_filter,
         )
         hits = []
         for point in response.points:
@@ -200,12 +205,17 @@ class Store:
             return 0
         return self.client.count(self.collection, exact=True).count
 
-    def scroll_all(self, with_vectors: bool = False, limit: int = 512) -> list[dict]:
+    def scroll_all(self, with_vectors: bool = False, limit: int = 512, source: str | None = None) -> list[dict]:
+        query_filter = (
+            Filter(must=[FieldCondition(key="source", match=MatchValue(value=source))])
+            if source else None
+        )
         points, next_offset = self.client.scroll(
             collection_name=self.collection,
             limit=limit,
             with_payload=True,
             with_vectors=with_vectors,
+            scroll_filter=query_filter,
         )
         rows = [self._to_row(p, with_vectors) for p in points]
         while next_offset is not None:
@@ -215,6 +225,7 @@ class Store:
                 offset=next_offset,
                 with_payload=True,
                 with_vectors=with_vectors,
+                scroll_filter=query_filter,
             )
             rows.extend(self._to_row(p, with_vectors) for p in points)
         return rows
