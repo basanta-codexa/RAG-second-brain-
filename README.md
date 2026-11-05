@@ -21,6 +21,7 @@ Markdown using Google's Gemini vision model, bringing your own API key.
 | Optional handwritten-notes transcription via Gemini | — |
 | Honest evaluation: hit@1, hit@k, MRR, missing-source skips | — |
 | Grounded AI answers via Groq — session consent, `[1]`-style citations, refuses when the documents don't say | — |
+| BM25+vector RRF fusion (`--hybrid`) and cross-encoder re-ranking (`--rerank`) — implemented, measured, **not** the default | — |
 
 ## How it fits together
 
@@ -183,6 +184,13 @@ on the network; the upload endpoint trusts your local filesystem boundaries.
 5. **Your data is your responsibility**: do not commit copyrighted books or PDFs;
    the Gemini transcription step uploads page images to Google — read their terms
    for the free tier before transcribing anything sensitive.
+6. **Measured ranking ablations on this corpus (hit@1 / hit@3 / MRR, n=33 evaluated):**
+   - pure vector (default): **32/33 / 33/33 / 0.985**
+   - BM25 + vector RRF (`--hybrid`): **30/33 / 32/33 / 0.934** — worse, kept as a flag
+   - vector + cross-encoder rerank (`--rerank`): **28/33 / 32/33 / 0.899** — worse, kept as a flag
+   Verified on this corpus with `evaluate.py --k 3` / `--hybrid` / `--rerank`.
+   These were shipped as flags but deliberately not made default — measure,
+   don't assume. Different corpora may favour fusion; do not trust folklore.
 
 ## Privacy and secrets
 
@@ -200,6 +208,5 @@ permission.
 ## Roadmap
 
 - FAISS or sqlite-vec backed persistent vector index
-- BM25 + vector hybrid retrieval; cross-encoder reranking
 - GitHub Actions CI (pytest + lint)
 - OCR-free page anchors; better table handling
