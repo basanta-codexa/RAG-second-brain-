@@ -128,7 +128,10 @@ AI answer toggle: **Allow AI answers this session**. When on, clicking
 **Grounded answer** sends only the retrieved passages to `api.groq.com` with
 your key. The UI shows exactly what was sent, before and after. Default model:
 `openai/gpt-oss-120b`; override with `GROQ_MODEL`. (Groq's Llama 3.3 70B is
-Enterprise-only — 404 on free-tier keys.)
+Enterprise-only — 404 on free-tier keys.) The model may use simple arithmetic
+on passage numbers and today's date (e.g. age from a birth date) but never
+outside knowledge; clicking `[1]` in the answer scrolls to and flashes the
+passage it cites.
 
 Endpoints: `GET /api/status`, `GET /api/index-status`, `POST /api/upload`,
 `DELETE /api/uploads/<name>`, `POST /api/uploads/clear`, `POST /api/search`,
