@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 import search as srch
 from loader import SUPPORTED_SUFFIXES
+from app import generate
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 ALLOWED_EXTENSIONS = frozenset(SUPPORTED_SUFFIXES)
@@ -37,6 +38,12 @@ ALLOWED_EXTENSIONS = frozenset(SUPPORTED_SUFFIXES)
 class SearchRequest(BaseModel):
     question: str = Field(min_length=3, max_length=2000)
     top_k: int = Field(default=srch.DEFAULT_TOP_K, ge=1, le=10)
+
+
+class AnswerRequest(BaseModel):
+    question: str = Field(min_length=3, max_length=2000)
+    top_k: int = Field(default=srch.DEFAULT_TOP_K, ge=1, le=10)
+    consent: bool  # must be True; the UI sets it from the session-wide toggle
 
 
 def sanitize_filename(raw: str) -> str:
@@ -165,13 +172,17 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             p.unlink()
         return {"removed": len(removed)}
 
+    def build_index_or_fail():
+        corpus = corpus_or_400()
+        index = srch.create_index([str(data_path), str(upload_path)], model)
+        encoder = index["encoder"] or srch.SentenceTransformer(model)
+        return corpus, index, encoder
+
     # ---------- search ----------
 
     @app.post("/api/search")
     def search_endpoint(req: SearchRequest) -> dict:
-        corpus = corpus_or_400()
-        index = srch.create_index([str(data_path), str(upload_path)], model)
-        encoder = index["encoder"] or srch.SentenceTransformer(model)
+        corpus, index, encoder = build_index_or_fail()
         hits = srch.query_index(index, encoder, req.question, top_k=req.top_k)
 
         items = [
@@ -189,6 +200,31 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             "hits": items,
             "cached_index": index["encoder"] is None,
             "model": index["model_name"],
+            "documents": len(corpus["base"]) + len(corpus["uploads"]),
+        }
+
+    # ---------- grounded answers (Groq) ----------
+
+    @app.post("/api/answer")
+    def answer_endpoint(req: AnswerRequest) -> dict:
+        if not req.consent:
+            raise HTTPException(
+                status_code=403,
+                detail="generation requires opting in for this session — toggle the allow switch first",
+            )
+
+        corpus, index, encoder = build_index_or_fail()
+        hits = srch.query_index(index, encoder, req.question, top_k=req.top_k)
+
+        try:
+            result = generate.answer(req.question, hits)
+        except RuntimeError as exc:
+            msg = str(exc)
+            raise HTTPException(status_code=503 if "GROQ_API_KEY" in msg else 502, detail=msg)
+
+        return {
+            **result,
+            "cached_index": index["encoder"] is None,
             "documents": len(corpus["base"]) + len(corpus["uploads"]),
         }
 
