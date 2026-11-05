@@ -499,3 +499,32 @@ textarea:focus, select:focus { outline: none; border-color: var(--accent); box-s
 :root[data-theme="dark"] .dot { background: var(--idle); }
 :root[data-theme="dark"] .brand-mark { background: var(--accent); }
 :root[data-theme="dark"] .brand-dot { background: var(--paper); }
+
+/* ---------------- citation chips ---------------- */
+
+.citation-chip {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, Menlo, monospace;
+  font-size: 11.5px; font-weight: 700; color: var(--accent-strong);
+  background: var(--accent-soft); border: 1px solid #d3dfda;
+  border-radius: 5px; padding: 1px 5px; margin: 0 2px;
+  vertical-align: baseline; cursor: pointer;
+}
+.citation-chip:hover { border-color: var(--accent); }
+.citation-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.hit { transition: border-color .15s ease, box-shadow .3s ease; }
+.hit.citation-flash {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  animation: citationPulse 1.7s ease-out 2;
+}
+@keyframes citationPulse {
+  0% { box-shadow: 0 0 0 6px var(--accent-soft); }
+  100% { box-shadow: 0 0 0 2px var(--accent-soft); }
+}
+
+:root[data-theme="dark"] .citation-chip {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-color: #26382F;
+}

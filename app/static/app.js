@@ -330,6 +330,7 @@ function renderHits(hits) {
   for (const hit of hits) {
     const node = el.hitTemplate.content.cloneNode(true);
     const li = node.querySelector('.hit');
+    li.setAttribute('data-rank', String(hit.rank));
     node.querySelector('.hit-rank').textContent = String(hit.rank).padStart(2, '0');
     const source = node.querySelector('.hit-source');
     source.textContent = hit.source;
@@ -460,12 +461,52 @@ async function handleCopy(which) {
 el.copyAnswer.addEventListener('click', () => handleCopy('answer'));
 el.copyCitations.addEventListener('click', () => handleCopy('citations'));
 
+const CITATION_RE = /\[(\d{1,2})\]/g;
+
+function buildAnswerFragment(text) {
+  const fragment = document.createDocumentFragment();
+  let cursor = 0;
+  for (const match of text.matchAll(CITATION_RE)) {
+    const before = text.slice(cursor, match.index);
+    if (before) fragment.appendChild(document.createTextNode(before));
+    const rank = Number(match[1]);
+    const chip = document.createElement('button');
+    chip.className = 'citation-chip';
+    chip.type = 'button';
+    chip.textContent = `[${rank}]`;
+    chip.title = `Jump to passage ${rank}`;
+    chip.addEventListener('click', () => highlightHit(rank));
+    fragment.appendChild(chip);
+    cursor = match.index + match[0].length;
+  }
+  const tail = text.slice(cursor);
+  if (tail) fragment.appendChild(document.createTextNode(tail));
+  return fragment;
+}
+
+function highlightHit(rank) {
+  const li = el.results.querySelector(`li[data-rank="${rank}"]`);
+  if (!li) {
+    showNotice(el.askMsg, `Passage [${rank}] is not in the current evidence list.`, true);
+    return;
+  }
+  li.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  li.classList.remove('citation-flash');
+  void li.offsetWidth; // restart the animation
+  li.classList.add('citation-flash');
+  window.setTimeout(() => li.classList.remove('citation-flash'), 1800);
+}
+
 function renderAnswer(payload) {
   state.lastAnswer = payload;
   el.answerPanel.hidden = false;
   el.answerPanel.classList.toggle('refused', !!payload.refused);
-  el.answerText.textContent = payload.answer;
   el.answerModel.textContent = payload.model || 'groq';
+  el.answerText.replaceChildren(buildAnswerFragment(payload.answer || ''));
+
+  // the evidence list shown below is exactly what the answer was grounded in
+  if (Array.isArray(payload.hits) && payload.hits.length) renderHits(payload.hits);
+
   el.sentList.replaceChildren();
   for (const item of payload.sent || []) {
     const li = document.createElement('li');

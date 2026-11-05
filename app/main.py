@@ -213,14 +213,7 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
     def mode_kwargs(mode: Mode) -> dict:
         return {"hybrid": mode == "hybrid", "rerank": mode == "rerank"}
 
-    # ---------- search ----------
-
-    @app.post("/api/search")
-    def search_endpoint(req: SearchRequest) -> dict:
-        corpus, index, encoder = build_index_or_fail()
-        hits = srch.query_index(index, encoder, req.question, top_k=req.top_k,
-                                source=req.source, **mode_kwargs(req.mode))
-
+    def hit_items(hits: list[dict]) -> list[dict]:
         items = []
         for i, h in enumerate(hits):
             item = {
@@ -236,6 +229,17 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
                 if extra in h:
                     item[extra] = round(float(h[extra]), 4)
             items.append(item)
+        return items
+
+    # ---------- search ----------
+
+    @app.post("/api/search")
+    def search_endpoint(req: SearchRequest) -> dict:
+        corpus, index, encoder = build_index_or_fail()
+        hits = srch.query_index(index, encoder, req.question, top_k=req.top_k,
+                                source=req.source, **mode_kwargs(req.mode))
+
+        items = hit_items(hits)
         return {
             "hits": items,
             "cached_index": index["encoder"] is None,
@@ -263,8 +267,10 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             msg = str(exc)
             raise HTTPException(status_code=503 if "GROQ_API_KEY" in msg else 502, detail=msg)
 
+        items = hit_items(hits)
         return {
             **result,
+            "hits": items,  # same shape as /api/search — UI renders these as the evidence list
             "cached_index": index["encoder"] is None,
             "documents": len(corpus["base"]) + len(corpus["uploads"]),
         }
