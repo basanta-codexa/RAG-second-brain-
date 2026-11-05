@@ -13,6 +13,12 @@ import argparse
 import sys
 from pathlib import Path
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 import search as srch
 from testset import TESTS
 
@@ -35,7 +41,8 @@ def find_rank(results, answers) -> int | None:
 
 
 def evaluate(folder: str, top_k: int, model_name: str,
-             chunk_size: int, overlap: int, rebuild: bool) -> int:
+             chunk_size: int, overlap: int, rebuild: bool,
+             hybrid: bool = False, rerank: bool = False) -> int:
     validate_tests(TESTS)
     index = srch.create_index(folder, model_name, chunk_size, overlap, rebuild)
     encoder = index["encoder"] or srch.SentenceTransformer(model_name)
@@ -50,7 +57,11 @@ def evaluate(folder: str, top_k: int, model_name: str,
         else:
             evaluated.append(t)
 
-    print(f"tests: {len(TESTS)} total | evaluated: {len(evaluated)} | skipped (source missing): {len(skipped)}\n")
+    print(f"tests: {len(TESTS)} total | evaluated: {len(evaluated)} | skipped (source missing): {len(skipped)}")
+    mode = "hybrid (BM25 + vector, RRF)" if hybrid else "vector-only"
+    if rerank:
+        mode += " + cross-encoder rerank"
+    print(f"mode: {mode}\n")
 
     reciprocal, hit1, hitk = 0.0, 0, 0
     misses: list[tuple[dict, list]] = []
@@ -58,7 +69,8 @@ def evaluate(folder: str, top_k: int, model_name: str,
     for t in evaluated:
         question_is_lenient = any(page is None for _, page in t["answers"])
         lenient += question_is_lenient
-        results = srch.query_index(index, encoder, t["q"], top_k)
+        results = srch.query_index(index, encoder, t["q"], top_k,
+                                   hybrid=hybrid, rerank=rerank)
         rank = find_rank(results, t["answers"])
         if rank is not None:
             hitk += 1
@@ -96,8 +108,11 @@ def main() -> int:
     parser.add_argument("--chunk-size", type=int, default=srch.DEFAULT_CHUNK_SIZE)
     parser.add_argument("--overlap", type=int, default=srch.DEFAULT_OVERLAP)
     parser.add_argument("--rebuild", action="store_true", help="ignore the embedding cache and re-embed")
+    parser.add_argument("--hybrid", action="store_true", help="enable BM25+vector fusion (measured regression on this corpus — see README)")
+    parser.add_argument("--rerank", action="store_true", help="re-rank top candidates with a cross-encoder")
     args = parser.parse_args()
-    return evaluate(args.folder, args.k, args.model, args.chunk_size, args.overlap, args.rebuild)
+    return evaluate(args.folder, args.k, args.model, args.chunk_size, args.overlap, args.rebuild,
+                    hybrid=args.hybrid, rerank=args.rerank)
 
 
 if __name__ == "__main__":
