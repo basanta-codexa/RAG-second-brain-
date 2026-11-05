@@ -109,8 +109,20 @@ python -m uvicorn app.main:app --port 8000
 ```
 
 1. Drop in a `.pdf`, `.md` or `.txt` (25 MB max). One file at a time; same name replaces.
-2. The index syncs on the next query — only changed files are re-embedded (first ever run embeds the corpus once).
+2. The index syncs on the next query — only changed files are re-embedded
+   (first run embeds the corpus once; the UI shows live per-file progress and
+   an elapsed timer during embedding).
 3. Ask questions; results show source, page, similarity score, and the chunk text.
+
+UI highlights:
+
+- **Source filter** — restrict retrieval to one file (Qdrant payload filter)
+- **Advanced retrieval** — Vector / Hybrid / Re-rank, with all scores shown
+- **Dark mode** — top-right toggle (or `prefers-color-scheme` on first visit)
+- **Keyboard** — `/` focuses the question box; `Ctrl+Enter` submits
+- **Copy answer / Copy citations** — one click, citations kept with the answer
+- **Live indexing progress** — real per-file/per-chunk counts from the server,
+  not a fake timer
 
 AI answer toggle: **Allow AI answers this session**. When on, clicking
 **Grounded answer** sends only the retrieved passages to `api.groq.com` with
@@ -118,9 +130,11 @@ your key. The UI shows exactly what was sent, before and after. Default model:
 `openai/gpt-oss-120b`; override with `GROQ_MODEL`. (Groq's Llama 3.3 70B is
 Enterprise-only — 404 on free-tier keys.)
 
-Endpoints: `GET /api/status`, `POST /api/upload`, `DELETE /api/uploads/<name>`,
-`POST /api/uploads/clear`, `POST /api/search`, `POST /api/answer`
-(`"consent": true` required, enforced server-side).
+Endpoints: `GET /api/status`, `GET /api/index-status`, `POST /api/upload`,
+`DELETE /api/uploads/<name>`, `POST /api/uploads/clear`, `POST /api/search`,
+`POST /api/answer` (`"consent": true` required, enforced server-side).
+Search and answer both accept `mode: "vector" | "hybrid" | "rerank"` and
+`source: "<file.md>"`.
 
 The UI is a local tool, not a hosted product — don't expose it to the network.
 
