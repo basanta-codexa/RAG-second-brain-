@@ -9,6 +9,15 @@
       name="description"
       content="Upload a document, search your local corpus with embeddings, and inspect exactly which chunks come back — with file, page and score."
     />
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem("sb-theme");
+          var mode = saved || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+          document.documentElement.setAttribute("data-theme", mode);
+        } catch (e) { /* no theme, ever, is fine */ }
+      })();
+    </script>
     <link rel="stylesheet" href="/static/styles.css" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230F5C4D'/%3E%3Ccircle cx='8' cy='8' r='2.4' fill='%23FAFAF8'/%3E%3C/svg%3E" />
   </head>
@@ -27,6 +36,7 @@
         <div class="topbar-meta" aria-live="polite">
           <span class="dot" id="health-dot"></span>
           <span id="health-label">Checking status…</span>
+          <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false">Dark</button>
         </div>
       </div>
     </header>
@@ -101,6 +111,25 @@
             placeholder="e.g. Which invariants should be defined before choosing a database?"
             required
           ></textarea>
+          <div class="query-meta">
+            <div class="result-count">
+              <label class="field-label" for="source-filter">Source</label>
+              <select id="source-filter">
+                <option value="" selected>All files</option>
+              </select>
+            </div>
+
+            <details class="advanced" id="advanced-panel">
+              <summary>Advanced retrieval</summary>
+              <p class="advanced-note">Vector retrieval is the measured best on this corpus. The other two are available to inspect — switch, search, compare.</p>
+              <fieldset class="retrieval-mode">
+                <label class="mode-option"><input type="radio" name="mode" value="vector" checked /><span>Vector<small>dense cosine, default</small></span></label>
+                <label class="mode-option"><input type="radio" name="mode" value="hybrid" /><span>Hybrid<small>BM25 + vector, reciprocal-rank fusion</small></span></label>
+                <label class="mode-option"><input type="radio" name="mode" value="rerank" /><span>Re-rank<small>cross-encoder over the top 20</small></span></label>
+              </fieldset>
+            </details>
+          </div>
+
           <label class="consent-toggle" for="allow-ai">
             <input type="checkbox" id="allow-ai" />
             <span class="consent-track" aria-hidden="true"><span class="consent-knob"></span></span>
@@ -134,6 +163,11 @@
             <h3>Grounded answer</h3>
             <span id="answer-model" class="mono answer-model"></span>
           </div>
+          <div class="answer-toolbar">
+            <button class="btn btn-ghost" id="copy-answer" type="button">Copy answer</button>
+            <button class="btn btn-ghost" id="copy-citations" type="button">Copy citations</button>
+            <span class="copy-feedback" id="copy-feedback" role="status" aria-live="polite"></span>
+          </div>
           <p id="answer-text" class="answer-text"></p>
           <details class="sent-details">
             <summary>What was sent to Groq for this answer</summary>
@@ -141,6 +175,25 @@
           </details>
           <p class="answer-audit">Session consent on — nothing is sent until you click <em>Grounded answer</em>. Passages are deleted from Groq after inference per their policy; your key, your quota.</p>
         </section>
+
+        <div id="ask-progress" class="ask-progress" hidden>
+          <div class="progress-head">
+            <span class="progress-stage" id="progress-stage">Preparing…</span>
+            <span class="progress-elapsed mono" id="progress-elapsed">0.0s</span>
+          </div>
+          <div class="progress-track" role="progressbar" aria-label="Indexing progress" aria-valuemin="0" aria-valuemax="100">
+            <div class="progress-fill" id="progress-fill"></div>
+          </div>
+          <p class="progress-hint" id="progress-hint"></p>
+        </div>
+
+        <ol class="skeleton" id="skeleton" hidden aria-hidden="true">
+          <li class="skeleton-line skeleton-w-90"></li>
+          <li class="skeleton-block"></li>
+          <li class="skeleton-line skeleton-w-60"></li>
+          <li class="skeleton-block"></li>
+          <li class="skeleton-line skeleton-w-75"></li>
+        </ol>
 
         <ol id="results" class="results" aria-live="polite"></ol>
 
@@ -163,7 +216,7 @@
         </div>
 
         <p class="disclaimer">
-          Retrieval always runs first. Clicking <em>Grounded answer</em> sends only the retrieved passages to Groq — the model must answer strictly from them, cite <code>[1]</code> <code>[2]</code> inline, and refuse when the documents don't say. If nothing relevant exists, expect low scores and, optionally, an honest refusal — not an invented one.
+          Retrieval always runs first. Clicking <em>Grounded answer</em> sends only the retrieved passages to Groq — the model must answer strictly from them, cite <code>[1]</code> <code>[2]</code> inline, and refuse when the documents don't say. If nothing relevant exists, expect low scores and an incomplete corpus.
         </p>
       </section>
     </main>
