@@ -1,18 +1,17 @@
-"""Cosine-similarity search over the corpus, with a persistent embedding cache.
+"""Semantic search over the corpus, backed by Qdrant (Docker).
+
+Requires a running Qdrant — see README. Indexing is incremental: each file is
+content-hashed, only new/changed files are embedded, deleted files have their
+vectors removed. State is tracked in .cache/qdrant_state.json.
 
 Usage:
     python search.py                    # interactive REPL
     python search.py --question "..."   # one-shot answer
-    python search.py --rebuild          # re-embed everything, ignore cache
-
-Embeddings are cached under .cache/ keyed by a content hash of the corpus and
-the model/chunk settings, so unchanged corpora load instantly.
+    python search.py --rebuild          # drop and re-embed everything
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 import re
 import sys
 import time
@@ -22,219 +21,203 @@ import numpy as np
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
-from loader import load_folder, SUPPORTED_SUFFIXES
+from loader import SUPPORTED_SUFFIXES, load_pdf, load_text
 from chunker import chunk_records
+from qdrant_store import Store, file_key, plan, sha256_file
 
 DEFAULT_MODEL = "BAAI/bge-base-en-v1.5"
 DEFAULT_CHUNK_SIZE = 800      # BGE-en reads ~512 tokens; keep chunks modest
 DEFAULT_OVERLAP = 150
 DEFAULT_TOP_K = 3
-CACHE_DIR = Path(".cache")
 
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
-
-
-def _cache_paths(fingerprint: str) -> tuple[Path, Path]:
-    key = fingerprint[:16]
-    return CACHE_DIR / f"index-{key}.npz", CACHE_DIR / f"index-{key}.json"
-
-
-def _as_list(folder: str | list[str]) -> list[str]:
-    if isinstance(folder, (str, Path)):
-        folders = [str(folder)]
-    else:
-        folders = [str(f) for f in folder]
-    if not folders:
-        raise ValueError("at least one corpus folder is required")
-    return folders
-
-
-def corpus_fingerprint(folder: str | list[str]) -> str:
-    """SHA-256 over names and contents of supported files, across all folders."""
-    h = hashlib.sha256()
-    for folder_name in _as_list(folder):
-        root = Path(folder_name)
-        if not root.is_dir():
-            raise FileNotFoundError(f"corpus folder not found: {root}")
-        h.update(root.name.encode("utf-8"))
-        h.update(b"\0")
-        for path in sorted(root.iterdir()):
-            if not path.is_file() or path.suffix.lower() not in SUPPORTED_SUFFIXES:
-                continue
-            h.update(path.name.encode("utf-8"))
-            h.update(b"\0")
-            h.update(path.read_bytes())
-            h.update(b"\0")
-    return h.hexdigest()
-
-
-def cache_is_fresh(fingerprint: str, model: str, chunk_size: int, overlap: int) -> bool:
-    index_path, meta_path = _cache_paths(fingerprint)
-    if not index_path.exists() or not meta_path.exists():
-        return False
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return False
-    return (
-        meta.get("fingerprint") == fingerprint
-        and meta.get("model") == model
-        and meta.get("chunk_size") == chunk_size
-        and meta.get("overlap") == overlap
-    )
-
-
-def save_cache(chunks: list[dict], vectors: np.ndarray, fingerprint: str,
-               model: str, chunk_size: int, overlap: int) -> None:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    index_path, meta_path = _cache_paths(fingerprint)
-    np.savez_compressed(
-        index_path,
-        vectors=vectors.astype(np.float32),
-        texts=np.array([c["text"] for c in chunks]),
-        sources=np.array([c["source"] for c in chunks]),
-        pages=np.array([c["page"] for c in chunks], dtype=np.int64),
-        chunk_ids=np.array([c["chunk_id"] for c in chunks]),
-    )
-    meta_path.write_text(json.dumps({
-        "fingerprint": fingerprint,
-        "model": model,
-        "chunk_size": chunk_size,
-        "overlap": overlap,
-        "chunks": len(chunks),
-        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-    }, indent=2), encoding="utf-8")
-
-
-def load_cache(fingerprint: str) -> tuple[list[dict], np.ndarray]:
-    index_path, _ = _cache_paths(fingerprint)
-    blob = np.load(index_path, allow_pickle=False)
-    chunks = [
-        {"text": t, "source": s, "page": int(p), "chunk_id": cid}
-        for t, s, p, cid in zip(
-            blob["texts"], blob["sources"], blob["pages"], blob["chunk_ids"]
-        )
-    ]
-    return chunks, blob["vectors"]
 
 
 def _tokenize(text: str) -> list[str]:
     return re.findall(r"[a-z0-9]+", text.lower())
 
 
+def _target_files(folders: list[str]) -> dict[str, Path]:
+    targets: dict[str, Path] = {}
+    for folder_name in folders:
+        root = Path(folder_name)
+        if not root.is_dir():
+            raise FileNotFoundError(f"corpus folder not found: {root}")
+        for path in sorted(root.iterdir()):
+            if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES:
+                targets[file_key(root, path)] = path
+    return targets
+
+
+def _load_one(path: Path, origin: str) -> list[dict]:
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        records = load_pdf(path)
+    else:
+        records = load_text(path)
+    for record in records:
+        record["origin"] = origin
+        record["source"] = path.name
+    return records
+
+
+def _embed_files(store: Store, files: list[tuple[str, Path]], model_name: str,
+                 chunk_size: int, overlap: int) -> dict[str, dict]:
+    if not files:
+        return {}
+    print(f"embedding {len(files)} changed file(s) with {model_name} ...")
+    model = SentenceTransformer(model_name)
+    done: dict[str, dict] = {}
+    for key, path in files:
+        records = _load_one(path, key)
+        hashed = sha256_file(path)
+        chunks = chunk_records(records, chunk_size, overlap)
+        if not chunks:
+            print(f"  {key}: nothing readable, skipped")
+            done[key] = {"sha256": hashed, "point_ids": []}
+            continue
+        t0 = time.time()
+        vectors = model.encode(
+            [c["text"] for c in chunks],
+            normalize_embeddings=True,
+            show_progress_bar=True,
+        )
+        store.create(vector_size=vectors.shape[1])
+        ids = store.upsert(chunks, vectors)
+        done[key] = {"sha256": hashed, "point_ids": ids}
+        print(f"  {key}: {len(chunks)} chunks in {time.time() - t0:.1f}s")
+    return done
+
+
 def create_index(folder: str | list[str] = "data", model_name: str = DEFAULT_MODEL,
                  chunk_size: int = DEFAULT_CHUNK_SIZE, overlap: int = DEFAULT_OVERLAP,
                  rebuild: bool = False) -> dict:
-    """Load the corpus, embed it (or reuse the cache), return a ready index dict.
+    """Sync the Qdrant collection with the current corpus files.
 
-    ``folder`` may be a single folder path or a list of folders; all are
-    chunked into one merged corpus in the order given.
+    ``folder`` may be one folder or a list; all supported files are merged.
+    Only new/changed files are (re-)embedded. Unchanged files, untouched.
     """
-    folders = _as_list(folder)
-    fingerprint = corpus_fingerprint(folders)
-    index_path, _ = _cache_paths(fingerprint)
+    folders = [folder] if isinstance(folder, str) else [str(f) for f in folder]
+    if not folders:
+        raise ValueError("at least one corpus folder is required")
 
-    def attach_bm25(chunks: list[dict]) -> BM25Okapi:
-        return BM25Okapi([_tokenize(c["text"]) for c in chunks])
+    store = Store()
+    files = _target_files(folders)
+    if not files:
+        raise RuntimeError(f"no documents in {', '.join(folders)}; is everything empty?")
 
-    if not rebuild and cache_is_fresh(fingerprint, model_name, chunk_size, overlap):
-        chunks, vectors = load_cache(fingerprint)
-        print(f"cache hit: reused {len(chunks)} embeddings from {index_path}")
-        return {"model_name": model_name, "chunks": chunks, "vectors": vectors,
-                "fingerprint": fingerprint, "encoder": None, "bm25": attach_bm25(chunks)}
+    if rebuild:
+        store.drop()
 
-    print(f"loading files and chunking {', '.join(folders)}...")
-    records = []
-    for folder_name in folders:
-        records.extend(load_folder(folder_name))
-    chunks = chunk_records(records, chunk_size, overlap)
-    if not chunks:
-        raise RuntimeError(f"no chunks produced from {', '.join(folders)}; is everything empty?")
-    print(f"{len(chunks)} chunks; embedding with {model_name} ...")
-    model = SentenceTransformer(model_name)
-    t0 = time.time()
-    vectors = model.encode(
-        [c["text"] for c in chunks],
-        normalize_embeddings=True,
-        show_progress_bar=True,
-    )
-    print(f"embedded {len(chunks)} chunks in {time.time() - t0:.1f}s")
-    save_cache(chunks, vectors, fingerprint, model_name, chunk_size, overlap)
-    return {"model_name": model_name, "chunks": chunks, "vectors": vectors,
-            "fingerprint": fingerprint, "encoder": model, "bm25": attach_bm25(chunks)}
+    state = store.load_state()
+    plan_result = plan({k: sha256_file(p) for k, p in files.items()},
+                       state, model_name, store.exists())
+
+    if plan_result["rebuild"]:
+        store.drop()
+    if plan_result["drop_ids"]:
+        store.delete_points(plan_result["drop_ids"])
+
+    new_state = plan_result["state"]
+    to_embed_keys = plan_result["to_embed"]
+    updates = _embed_files(store, [(k, files[k]) for k in to_embed_keys],
+                           model_name, chunk_size, overlap)
+    new_state["files"].update(updates)
+    store.save_state(new_state)
+
+    if not store.exists():
+        # no documents were embeddable (e.g. all unreadable)
+        print("warning: Qdrant collection still missing after indexing")
+
+    chunks = store.scroll_all(with_vectors=False)
+    embedded = len(to_embed_keys)
+    reused = len(chunks) - sum(len(v["point_ids"]) for k, v in updates.items())
+    print(f"collection {store.collection}: {store.count()} points "
+          f"({embedded} file(s) re-embedded, {reused} chunk(s) reused)")
+
+    bm25 = BM25Okapi([_tokenize(c["text"]) for c in chunks]) if chunks else None
+    return {"model_name": model_name, "chunks": chunks, "bm25": bm25,
+            "encoder": None, "store": store}
 
 
-def _ranks(scores: np.ndarray) -> np.ndarray:
-    """Position (0 = best) of each chunk in the ranking, for RRF."""
-    order = np.argsort(-scores, kind="stable")
-    ranks = np.empty(len(order), dtype=np.int64)
-    ranks[order] = np.arange(len(order))
-    return ranks
+# ---------- query ----------
+
+def _scroll_vectors(store: Store) -> dict[str, np.ndarray]:
+    out = {}
+    for row in store.scroll_all(with_vectors=True):
+        out[row["chunk_id"]] = np.array(row["vector"], dtype=np.float32)
+    return out
 
 
-_RRF_K = 60  # standard reciprocal-rank-fusion damping constant
-
+_RRF_K = 60
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 RERANK_POOL = 20
 
 
-def _rank_order(index: dict, question: str, vector_scores: np.ndarray,
-                hybrid: bool) -> tuple[np.ndarray, np.ndarray]:
-    """Candidate ordering: fused if hybrid, pure vector otherwise."""
-    if hybrid and "bm25" in index:
-        q = _tokenize(question)
-        bm25_scores = np.array(index["bm25"].get_scores(q))
-        fused = (
-            1.0 / (_RRF_K + _ranks(vector_scores) + 1)
-            + 1.0 / (_RRF_K + _ranks(bm25_scores) + 1)
-        )
-        return np.argsort(-fused, kind="stable"), bm25_scores
-    return np.argsort(-vector_scores, kind="stable"), np.zeros(len(vector_scores))
+def _rrf_order(rows: list[dict], vector_scores: np.ndarray,
+               bm25_scores: np.ndarray) -> np.ndarray:
+    def ranks(scores):
+        order = np.argsort(-scores, kind="stable")
+        r = np.empty(len(order), dtype=np.int64)
+        r[order] = np.arange(len(order))
+        return r
+
+    fused = 1.0 / (_RRF_K + ranks(vector_scores) + 1) \
+        + 1.0 / (_RRF_K + ranks(bm25_scores) + 1)
+    return np.argsort(-fused, kind="stable")
 
 
 def query_index(index: dict, encoder: SentenceTransformer, question: str,
                 top_k: int = DEFAULT_TOP_K, use_prefix: bool | None = None,
                 hybrid: bool = False, rerank: bool = False) -> list[dict]:
-    if not question.strip():
+    question = question.strip()
+    if not question:
         raise ValueError("question must not be empty")
-    if use_prefix is None:
-        use_prefix = "bge" in index["model_name"].lower()
 
+    model_name = index["model_name"]
+    if use_prefix is None:
+        use_prefix = "bge" in model_name.lower()
     q = (BGE_QUERY_PREFIX + question) if use_prefix else question
     q_vec = encoder.encode(q, normalize_embeddings=True)
-    vector_scores = index["vectors"] @ q_vec
-    n = len(vector_scores)
-    k = min(top_k, n)
 
-    order, bm25_scores = _rank_order(index, question, vector_scores, hybrid)
+    store: Store = index["store"]
+    chunks = index["chunks"]
+    total = len(chunks)
+    if total == 0:
+        raise RuntimeError("collection empty — nothing to search")
+    k = min(top_k, total)
+
+    if hybrid and index.get("bm25") is not None:
+        vec_by_id = _scroll_vectors(store)
+        vectors = np.array([vec_by_id[c["chunk_id"]] for c in chunks])
+        vector_scores = vectors @ q_vec
+        bm25_scores = np.array(index["bm25"].get_scores(_tokenize(question)))
+        order = _rrf_order(chunks, vector_scores, bm25_scores)
+        order = order[:k]
+        return [
+            {**chunks[i], "score": float(vector_scores[i]),
+             "bm25_score": float(bm25_scores[i])}
+            for i in order
+        ]
 
     if rerank:
-        pool = order[: min(RERANK_POOL, n)]
+        pool = store.search(q_vec, limit=min(RERANK_POOL, total))
         reranker = index.get("reranker")
         if reranker is None:
             reranker = CrossEncoder(RERANK_MODEL)
             index["reranker"] = reranker
         try:
-            pairs = [(question, index["chunks"][i]["text"]) for i in pool]
-            r_scores = np.asarray(reranker.predict(pairs), dtype=float)
+            r_scores = np.asarray(
+                reranker.predict([(question, h["text"]) for h in pool]), dtype=float)
         except Exception as exc:
             raise RuntimeError(f"reranker unavailable ({RERANK_MODEL}): {exc}") from exc
-        rerank_idx = np.argsort(-r_scores, kind="stable")[:k]
-        chosen = [pool[i] for i in rerank_idx]
-        return [
-            {**index["chunks"][i],
-             "score": float(vector_scores[i]),
-             "bm25_score": float(bm25_scores[i]),
-             "rerank_score": float(r_scores[j])}
-            for i, j in zip(chosen, rerank_idx)
-        ]
+        order = np.argsort(-r_scores, kind="stable")[:k]
+        hits = []
+        for j in order:
+            hits.append({**pool[j], "rerank_score": float(r_scores[j])})
+        return hits
 
-    hits = []
-    for i in order[:k]:
-        hit = {**index["chunks"][i], "score": float(vector_scores[i]),
-               "bm25_score": float(bm25_scores[i])}
-        hits.append(hit)
-    return hits
+    return store.search(q_vec, limit=k)
 
 
 def print_hits(hits: list[dict]) -> None:
@@ -249,20 +232,19 @@ def print_hits(hits: list[dict]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Semantic search over your corpus.")
-    parser.add_argument("--folder", default="data", help="corpus folder (default: data)")
+    parser = argparse.ArgumentParser(description="Semantic search over your corpus (Qdrant).")
+    parser.add_argument("--folder", default="data")
     parser.add_argument("--model", default=DEFAULT_MODEL, help=f"embedding model (default: {DEFAULT_MODEL})")
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
     parser.add_argument("--overlap", type=int, default=DEFAULT_OVERLAP)
     parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
-    parser.add_argument("--rebuild", action="store_true", help="ignore the embedding cache and re-embed")
+    parser.add_argument("--rebuild", action="store_true", help="drop the collection and re-embed everything")
     parser.add_argument("--no-query-prefix", action="store_true",
-                        help="disable the BGE instruction prefix (default: auto-detected from model name)")
-    parser.add_argument("--hybrid", action="store_true",
-                        help="enable BM25+vector RRF fusion (measured to regress on some corpora — see README)")
+                        help="disable the BGE instruction prefix")
+    parser.add_argument("--hybrid", action="store_true", help="BM25+vector RRF fusion")
     parser.add_argument("--rerank", action="store_true",
-                        help=f"re-rank the top {RERANK_POOL} with cross-encoder ({RERANK_MODEL})")
-    parser.add_argument("--question", help="ask a single question and exit (non-interactive)")
+                        help=f"re-rank with cross-encoder ({RERANK_MODEL})")
+    parser.add_argument("--question", help="ask one question and exit")
     args = parser.parse_args()
 
     index = create_index(args.folder, args.model,
