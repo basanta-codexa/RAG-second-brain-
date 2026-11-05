@@ -28,31 +28,50 @@ DEFAULT_CHUNK_SIZE = 800      # BGE-en reads ~512 tokens; keep chunks modest
 DEFAULT_OVERLAP = 150
 DEFAULT_TOP_K = 3
 CACHE_DIR = Path(".cache")
-INDEX_PATH = CACHE_DIR / "index.npz"
-META_PATH = CACHE_DIR / "index_meta.json"
 
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 
-def corpus_fingerprint(folder: str) -> str:
-    """SHA-256 over file names and contents of every supported file."""
-    root = Path(folder)
+def _cache_paths(fingerprint: str) -> tuple[Path, Path]:
+    key = fingerprint[:16]
+    return CACHE_DIR / f"index-{key}.npz", CACHE_DIR / f"index-{key}.json"
+
+
+def _as_list(folder: str | list[str]) -> list[str]:
+    if isinstance(folder, (str, Path)):
+        folders = [str(folder)]
+    else:
+        folders = [str(f) for f in folder]
+    if not folders:
+        raise ValueError("at least one corpus folder is required")
+    return folders
+
+
+def corpus_fingerprint(folder: str | list[str]) -> str:
+    """SHA-256 over names and contents of supported files, across all folders."""
     h = hashlib.sha256()
-    for path in sorted(root.iterdir()):
-        if not path.is_file() or path.suffix.lower() not in SUPPORTED_SUFFIXES:
-            continue
-        h.update(path.name.encode("utf-8"))
+    for folder_name in _as_list(folder):
+        root = Path(folder_name)
+        if not root.is_dir():
+            raise FileNotFoundError(f"corpus folder not found: {root}")
+        h.update(root.name.encode("utf-8"))
         h.update(b"\0")
-        h.update(path.read_bytes())
-        h.update(b"\0")
+        for path in sorted(root.iterdir()):
+            if not path.is_file() or path.suffix.lower() not in SUPPORTED_SUFFIXES:
+                continue
+            h.update(path.name.encode("utf-8"))
+            h.update(b"\0")
+            h.update(path.read_bytes())
+            h.update(b"\0")
     return h.hexdigest()
 
 
 def cache_is_fresh(fingerprint: str, model: str, chunk_size: int, overlap: int) -> bool:
-    if not INDEX_PATH.exists() or not META_PATH.exists():
+    index_path, meta_path = _cache_paths(fingerprint)
+    if not index_path.exists() or not meta_path.exists():
         return False
     try:
-        meta = json.loads(META_PATH.read_text(encoding="utf-8"))
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return False
     return (
@@ -66,15 +85,16 @@ def cache_is_fresh(fingerprint: str, model: str, chunk_size: int, overlap: int) 
 def save_cache(chunks: list[dict], vectors: np.ndarray, fingerprint: str,
                model: str, chunk_size: int, overlap: int) -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    index_path, meta_path = _cache_paths(fingerprint)
     np.savez_compressed(
-        INDEX_PATH,
+        index_path,
         vectors=vectors.astype(np.float32),
         texts=np.array([c["text"] for c in chunks]),
         sources=np.array([c["source"] for c in chunks]),
         pages=np.array([c["page"] for c in chunks], dtype=np.int64),
         chunk_ids=np.array([c["chunk_id"] for c in chunks]),
     )
-    META_PATH.write_text(json.dumps({
+    meta_path.write_text(json.dumps({
         "fingerprint": fingerprint,
         "model": model,
         "chunk_size": chunk_size,
@@ -84,8 +104,9 @@ def save_cache(chunks: list[dict], vectors: np.ndarray, fingerprint: str,
     }, indent=2), encoding="utf-8")
 
 
-def load_cache() -> tuple[list[dict], np.ndarray]:
-    blob = np.load(INDEX_PATH, allow_pickle=False)
+def load_cache(fingerprint: str) -> tuple[list[dict], np.ndarray]:
+    index_path, _ = _cache_paths(fingerprint)
+    blob = np.load(index_path, allow_pickle=False)
     chunks = [
         {"text": t, "source": s, "page": int(p), "chunk_id": cid}
         for t, s, p, cid in zip(
@@ -95,23 +116,31 @@ def load_cache() -> tuple[list[dict], np.ndarray]:
     return chunks, blob["vectors"]
 
 
-def create_index(folder: str = "data", model_name: str = DEFAULT_MODEL,
+def create_index(folder: str | list[str] = "data", model_name: str = DEFAULT_MODEL,
                  chunk_size: int = DEFAULT_CHUNK_SIZE, overlap: int = DEFAULT_OVERLAP,
                  rebuild: bool = False) -> dict:
-    """Load the corpus, embed it (or reuse the cache), return a ready index dict."""
-    fingerprint = corpus_fingerprint(folder)
+    """Load the corpus, embed it (or reuse the cache), return a ready index dict.
+
+    ``folder`` may be a single folder path or a list of folders; all are
+    chunked into one merged corpus in the order given.
+    """
+    folders = _as_list(folder)
+    fingerprint = corpus_fingerprint(folders)
+    index_path, _ = _cache_paths(fingerprint)
 
     if not rebuild and cache_is_fresh(fingerprint, model_name, chunk_size, overlap):
-        chunks, vectors = load_cache()
-        print(f"cache hit: reused {len(chunks)} embeddings from {INDEX_PATH}")
+        chunks, vectors = load_cache(fingerprint)
+        print(f"cache hit: reused {len(chunks)} embeddings from {index_path}")
         return {"model_name": model_name, "chunks": chunks, "vectors": vectors,
                 "fingerprint": fingerprint, "encoder": None}
 
-    print(f"loading files and chunking {folder}...")
-    records = load_folder(folder)
+    print(f"loading files and chunking {', '.join(folders)}...")
+    records = []
+    for folder_name in folders:
+        records.extend(load_folder(folder_name))
     chunks = chunk_records(records, chunk_size, overlap)
     if not chunks:
-        raise RuntimeError(f"no chunks produced from {folder}; is it empty?")
+        raise RuntimeError(f"no chunks produced from {', '.join(folders)}; is everything empty?")
     print(f"{len(chunks)} chunks; embedding with {model_name} ...")
     model = SentenceTransformer(model_name)
     t0 = time.time()
