@@ -1,0 +1,10 @@
+# Core runtime dependencies for the local RAG indexing and query tools.
+# Tested with the versions pinned here (see README for exact setup).
+pypdf==6.21.4
+pymupdf==2.0
+numpy==2.5.4
+sentence-transformers==6.2.0
+torch==2.15.0
+transformers==5.22.1
+scikit-learn==1.9.1
+google-genai==2.34.0
