@@ -23,6 +23,7 @@ build/
 # Personal/private: do NOT commit. See README "Bringing your own data".
 data/
 transcripts/
+uploads/
 system-design-notes.pdf
 
 # --- OS/editor clutter ---
