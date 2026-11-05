@@ -34,6 +34,13 @@ Markdown files may encode pages with a `<<<PAGE n>>>` marker; content before
 the first marker is kept as page 0 (never silently dropped). PDFs contribute
 their real page numbers.
 
+```
+app/
+├── main.py      # FastAPI service: upload, clear uploads, merged search
+└── static/      # vanilla HTML/CSS/JS single page — no frameworks
+uploads/         # gitignored staging area for uploaded files
+```
+
 ## Bring your own data
 
 The repository intentionally ships **no documents** — your notes stay private.
@@ -60,14 +67,16 @@ Requires Python 3.11+ (developed on Windows; paths are portable).
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 
-# 2. Install dependencies
-pip install -r requirements.txt
-pip install -r requirements-dev.txt   # needed only for the unit tests
+# 2. Install dependencies (use python -m pip if the launcher fails)
+python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt   # needed only for the unit tests
 
 # 3. (Optional, only for transcribe.py) set your Gemini API key
 copy .env.example .env                # then edit .env — never commit it
-$env:GEMINI_API_KEY = "your_key_here"
 ```
+
+`transcribe.py` loads `GEMINI_API_KEY` from the project `.env` file automatically.
+An already-set environment variable takes precedence.
 
 ## Usage
 
@@ -100,6 +109,39 @@ Notes on the commands above:
   skipped because that source was not present: `hit@1: 32/33 hit@3: 33/33 MRR: 0.985`.
 - Unit tests: `python -m pytest -q`
 
+## Web test bench
+
+A minimal, local web UI ships with the repo — no frameworks, no dashboards,
+no account, no telemetry. It lets you upload a document, then ask questions and
+inspect the exact chunks that come back (file, page, similarity score). The
+merged corpus is `data/` plus anything you upload; uploads stay in the
+gitignored `uploads/` folder.
+
+```powershell
+# Start the server (loads PyTorch; first start takes ~10s)
+python -m uvicorn app.main:app --port 8000
+
+# Open http://127.0.0.1:8000
+```
+
+What you get, end to end:
+
+1. **Upload** any `.pdf`, `.md` or `.txt` (25 MB max, sanitised file name,
+   empty payloads rejected).
+2. The **index rebuilds automatically** on the next search — on CPU this
+   typically takes 1–2 minutes; afterwards it is reused from the content-hash
+   cache under `.cache/`.
+3. **Ask** a question (3–2000 characters, 1–10 passages) and read the evidence —
+   scores, source file, page, and the raw chunk text with expand/collapse.
+
+Endpoints if you prefer the API: `GET /api/status`, `POST /api/upload`,
+`DELETE /api/uploads/<name>`, `POST /api/uploads/clear`, `POST /api/search`.
+Configuration via `SECOND_BRAIN_DATA`, `SECOND_BRAIN_UPLOADS`,
+`SECOND_BRAIN_MODEL`, `SECOND_BRAIN_MAX_MB`.
+
+The UI is a **local test harness**, not a hosted product — do not expose it
+on the network; the upload endpoint trusts your local filesystem boundaries.
+
 ## Honest limitations (no sugarcoating)
 
 1. **It retrieves; it does not answer.** If the chunk isn't in the top-k, the tool
@@ -117,8 +159,8 @@ Notes on the commands above:
 
 ## Privacy and secrets
 
-- `.env` is gitignored and **never** committed. The key is read from the
-  environment; `.env.example` ships as a placeholder.
+- `.env` is gitignored and **never** committed. `transcribe.py` loads the key
+  from this file; `.env.example` ships as a placeholder.
 - `data/`, `transcripts/`, `*.pdf` at the repo root, and `.cache/` are ignored.
 - The repo ships no documents at all, by design.
 
