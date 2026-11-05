@@ -99,3 +99,5 @@ def test_answer_success_with_mocked_provider(monkeypatch, client):
     assert body["answer"] == "Oslo keeps it in a copper vault. [1]"
     assert body["sent"][0]["source"] == "notes.txt"
     assert body["documents"] == 1
+    assert body["hits"][0]["source"] == "notes.txt"
+    assert body["hits"][0]["rank"] == 1
