@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Second Brain — Document Test Bench</title>
+    <meta
+      name="description"
+      content="Upload a document, search your local corpus with embeddings, and inspect exactly which chunks come back — with file, page and score."
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230F5C4D'/%3E%3Ccircle cx='8' cy='8' r='2.4' fill='%23FAFAF8'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <span class="brand-dot"></span>
+          </div>
+          <div class="brand-text">
+            <p class="eyebrow">Local retrieval · nothing leaves this machine</p>
+            <h1>Second Brain — Document Test Bench</h1>
+          </div>
+        </div>
+        <div class="topbar-meta" aria-live="polite">
+          <span class="dot" id="health-dot"></span>
+          <span id="health-label">Checking status…</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <!-- -------- corpus panel -------- -->
+      <aside class="panel corpus-panel" aria-labelledby="corpus-heading">
+        <div class="panel-head">
+          <p class="panel-kicker">Step 1</p>
+          <h2 id="corpus-heading">Add a document</h2>
+        </div>
+
+        <form
+          id="upload-form"
+          class="dropzone"
+          action="/api/upload"
+          method="post"
+          enctype="multipart/form-data"
+        >
+          <input
+            id="file-input"
+            class="file-input"
+            type="file"
+            name="file"
+            accept=".pdf,.md,.txt"
+            required
+          />
+          <label for="file-input" class="dropzone-label">
+            <span class="dropzone-rule" aria-hidden="true"></span>
+            <span class="dropzone-title">Drop a file here, or <span class="underline">browse</span></span>
+            <span class="dropzone-sub">PDF, Markdown or plain text · 25 MB max</span>
+          </label>
+          <div class="upload-footer">
+            <span class="selected-file" id="selected-file" aria-live="polite">No file selected</span>
+            <button class="btn btn-primary" type="submit" id="upload-btn">Save &amp; index</button>
+          </div>
+        </form>
+        <p id="upload-message" class="notice" role="status" hidden></p>
+
+        <div class="files-block">
+          <div class="files-head">
+            <h3>Uploaded</h3>
+            <button class="btn btn-ghost" id="clear-uploads" type="button">Clear all</button>
+          </div>
+          <ul id="upload-list" class="file-list" aria-live="polite"></ul>
+        </div>
+
+        <div class="base-block">
+          <h3>Base corpus <span class="subtle">(read-only here)</span></h3>
+          <ul id="base-list" class="file-list file-list-static"></ul>
+          <p class="hint">Add or remove files in <code>data/</code> on disk — the index rebuilds on the next search.</p>
+        </div>
+      </aside>
+
+      <!-- -------- ask panel -------- -->
+      <section class="panel ask-panel" aria-labelledby="ask-heading">
+        <div class="panel-head row-between">
+          <div>
+            <p class="panel-kicker">Step 2</p>
+            <h2 id="ask-heading">Ask it something</h2>
+          </div>
+          <div class="workbench-status" id="index-badge" aria-live="polite">Checking…</div>
+        </div>
+
+        <form id="question-form" class="ask-form">
+          <label class="field-label" for="question">Question</label>
+          <textarea
+            id="question"
+            name="question"
+            rows="2"
+            maxlength="2000"
+            placeholder="e.g. Which invariants should be defined before choosing a database?"
+            required
+          ></textarea>
+          <div class="form-footer">
+            <div class="result-count">
+              <label class="field-label" for="top-k">Passages</label>
+              <select id="top-k" name="top_k">
+                <option value="1">1</option>
+                <option value="3" selected>3</option>
+                <option value="5">5</option>
+                <option value="10">10</option>
+              </select>
+            </div>
+            <button class="btn btn-primary btn-large" type="submit" id="ask-btn">Show evidence</button>
+          </div>
+        </form>
+
+        <p id="ask-message" class="notice" role="status" hidden></p>
+
+        <ol id="results" class="results" aria-live="polite"></ol>
+
+        <template id="hit-template">
+          <li class="hit">
+            <div class="hit-meta">
+              <span class="hit-rank mono"></span>
+              <span class="hit-source"></span>
+              <span class="hit-page mono"></span>
+              <span class="hit-score mono"></span>
+            </div>
+            <p class="hit-text"></p>
+            <button class="toggle-text" type="button" aria-expanded="false">Expand passage</button>
+          </li>
+        </template>
+
+        <div id="empty-state" class="empty-state">
+          <p class="empty-title">No evidence yet</p>
+          <p class="empty-body">Upload a document on the left, then ask a question. Answers are the raw chunks the model ranked most similar — nothing is rewritten or invented.</p>
+        </div>
+
+        <p class="disclaimer">
+          Retrieval only — no answer is generated. If nothing relevant exists in the documents, the scores will be low and the passages off-topic. That is the honest result, not a failure.
+        </p>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <p>Second Brain · local test bench · files stay on this computer · unsupported types, empty files and oversized uploads are rejected</p>
+      <p class="foot-right">Built with FastAPI · sentence-transformers · no cloud, no account, no telemetry</p>
+    </footer>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
