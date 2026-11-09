@@ -5,7 +5,7 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 const byName = (n) => $(`input[name="mode"][value="${n}"]`);
 
-const state = { documents: 0, allowAI: false, sources: [], lastAnswer: null };
+const state = { documents: 0, allowAI: false, sources: [], lastAnswer: null, busy: false };
 
 const el = {
   healthDot: $('#health-dot'),
@@ -37,6 +37,7 @@ const el = {
   progressStage: $('#progress-stage'),
   progressElapsed: $('#progress-elapsed'),
   progressFill: $('#progress-fill'),
+  progressTrack: $('#progress-track'),
   progressHint: $('#progress-hint'),
 
   allowAi: $('#allow-ai'),
@@ -53,8 +54,8 @@ const el = {
 const HINTS = [
   'Edit one file → only that file is re-embedded. Nothing else is touched.',
   'Press / to jump straight to the question box.',
-  'Benchmark on this corpus: hit@3 = 33/33 (baseline, 12 missing-source tests skipped).',
-  'Vector measured best here — the other modes are under Advanced retrieval.',
+  'The source filter accepts the full origin path shown in the file list.',
+  'Vector is the default; Hybrid and Re-rank are under Advanced retrieval.',
   'Uploaded documents merge with data/ — the corpus grows, locally.',
 ];
 
@@ -100,15 +101,27 @@ async function pollIndexStatus() {
     const label = stageText(p);
     if (label) el.progressStage.textContent = label;
     const frac = stageFraction(p);
-    el.progressFill.style.width = frac == null ? '8%' : `${Math.max(2, Math.round(frac * 100))}%`;
+    const pct = frac == null ? 8 : Math.max(2, Math.round(frac * 100));
+    el.progressFill.style.width = `${pct}%`;
+    if (el.progressTrack) el.progressTrack.setAttribute('aria-valuenow', String(pct));
   } catch { /* polling is best-effort; the bar just stays put */ }
+}
+function resetAnswer() {
+  state.lastAnswer = null;
+  el.answerPanel.hidden = true;
+  el.answerPanel.classList.remove('refused');
+  el.answerText.replaceChildren();
+  el.answerModel.textContent = '';
+  el.sentList.replaceChildren();
 }
 function beginProgress() {
   el.progressPanel.hidden = false;
   el.skeleton.hidden = false;
   el.results.replaceChildren();
   el.emptyState.hidden = true;
+  resetAnswer();
   el.progressFill.style.width = '2%';
+  if (el.progressTrack) el.progressTrack.setAttribute('aria-valuenow', '2');
   el.progressStage.textContent = 'Preparing question…';
   el.progressElapsed.textContent = '0.0s';
   el.progressHint.textContent = HINTS[0];
@@ -147,9 +160,9 @@ async function refreshStatus() {
     el.clearUploads.disabled = s.uploads.length === 0;
 
     if (s.documents > 0) {
-      setBusy('ok', `Ready · ${s.documents} document${s.documents === 1 ? '' : 's'} · ${s.model}`, 'Service up');
+      setBusy('ok', `Ready · ${s.documents} document${s.documents === 1 ? '' : 's'} · ${s.model}`, 'App up');
     } else {
-      setBusy('idle', 'Waiting for documents', 'Service up');
+      setBusy('idle', 'Waiting for documents', 'App up');
     }
     return s;
   } catch {
@@ -162,14 +175,19 @@ async function refreshStatus() {
 
 function renderSourceFilter() {
   const previous = el.sourceFilter.value;
-  const options = ['<option value="">All files</option>',
-    ...state.sources.map((n) => `<option value="${escapeAttr(n)}">${escapeHtml(n)}</option>`)];
-  el.sourceFilter.innerHTML = options.join('');
+  el.sourceFilter.replaceChildren();
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = 'All files';
+  el.sourceFilter.appendChild(all);
+  for (const name of state.sources) {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = name;
+    el.sourceFilter.appendChild(option);
+  }
   el.sourceFilter.value = state.sources.includes(previous) ? previous : '';
 }
-const escapeHtml = (s) => s.replace(/[&<>"']/g, (c) =>
-  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const escapeAttr = escapeHtml;
 
 function renderFileList(list, files, removable) {
   list.replaceChildren();
@@ -229,6 +247,9 @@ async function removeUpload(name) {
     return;
   }
   showNotice(el.uploadMsg, `Removed ${name}. The index rebuilds on the next search.`);
+  resetAnswer();
+  el.results.replaceChildren();
+  el.emptyState.hidden = false;
   await refreshStatus();
 }
 
@@ -242,7 +263,7 @@ document.addEventListener('keydown', (e) => {
 el.questionForm.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
     e.preventDefault();
-    el.questionForm.requestSubmit();
+    if (!state.busy) el.questionForm.requestSubmit();
   }
 });
 
@@ -298,6 +319,9 @@ el.dropzone.addEventListener('submit', async (event) => {
       `Saved ${payload.name}${payload.replaced ? ' (replaced existing file)' : ''}. The index rebuilds on the next search — only this file is re-embedded.`);
     el.fileInput.value = '';
     el.selectedFile.textContent = 'No file selected';
+    resetAnswer();
+    el.results.replaceChildren();
+    el.emptyState.hidden = false;
   } catch (err) {
     showNotice(el.uploadMsg, err.message || 'Upload failed.', true);
   } finally {
@@ -311,7 +335,14 @@ el.clearUploads.addEventListener('click', async () => {
   if (!window.confirm('Remove every uploaded file? The base corpus in data/ is untouched.')) return;
   const res = await fetch('/api/uploads/clear', { method: 'POST' });
   const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    showNotice(el.uploadMsg, payload.detail || 'Could not clear uploads.', true);
+    return;
+  }
   showNotice(el.uploadMsg, `Removed ${payload.removed ?? 0} uploaded file(s). The index updates on the next search.`);
+  resetAnswer();
+  el.results.replaceChildren();
+  el.emptyState.hidden = false;
   await refreshStatus();
 });
 
@@ -365,9 +396,9 @@ async function requestJson(url, body) {
 }
 
 async function handleQueryError(res, payload, noticeTarget) {
+  el.emptyState.hidden = false;
   if (res.status === 409) {
     el.results.replaceChildren();
-    el.emptyState.hidden = false;
     showNotice(noticeTarget, payload.detail || 'No documents yet.', true);
     return;
   }
@@ -376,13 +407,16 @@ async function handleQueryError(res, payload, noticeTarget) {
 
 el.questionForm.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (state.busy) return;
   const question = el.question.value.trim();
   if (question.length < 3) {
     showNotice(el.askMsg, 'Ask at least three characters.', true);
     return;
   }
   clearNotice(el.askMsg);
+  state.busy = true;
   el.askBtn.disabled = true;
+  el.answerBtn.disabled = true;
   el.askBtn.textContent = 'Searching…';
   setBusy('busy', 'Working (cold index rebuilds once)', 'Working…');
   beginProgress();
@@ -392,16 +426,23 @@ el.questionForm.addEventListener('submit', async (event) => {
     if (!res.ok) await handleQueryError(res, payload, el.askMsg);
     else {
       renderHits(payload.hits);
+      const warned = Array.isArray(payload.warnings) && payload.warnings.length
+        ? ` · ${payload.warnings.length} file(s) could not be indexed`
+        : '';
       showNotice(el.askMsg,
         `${payload.hits.length} passage(s) from ${payload.documents} document(s) · ${payload.model}` +
-        (el.sourceFilter.value ? ` · filtered to ${el.sourceFilter.value}` : ''));
+        (el.sourceFilter.value ? ` · filtered to ${el.sourceFilter.value}` : '') + warned,
+        warned !== '');
     }
   } catch (err) {
+    el.emptyState.hidden = false;
     showNotice(el.askMsg, err.message || 'Search failed.', true);
   } finally {
+    state.busy = false;
     endProgress();
     el.askBtn.disabled = false;
     el.askBtn.textContent = 'Show evidence';
+    el.answerBtn.disabled = !state.allowAI;
     await refreshStatus();
   }
 });
@@ -513,9 +554,19 @@ function renderAnswer(payload) {
     li.textContent = `${item.rank}. ${item.source} · page ${item.page} · ${item.chars} chars · sim ${item.score.toFixed(3)}`;
     el.sentList.appendChild(li);
   }
+
+  if (Array.isArray(payload.invalid_citations) && payload.invalid_citations.length) {
+    showNotice(el.askMsg,
+      `The model cited passage(s) ${payload.invalid_citations.map((n) => `[${n}]`).join(', ')} ` +
+      'that were not sent to it. Treat those claims as unsupported.', true);
+  } else if (Array.isArray(payload.warnings) && payload.warnings.length) {
+    showNotice(el.askMsg,
+      `${payload.warnings.length} file(s) could not be indexed; results use the last good version.`, true);
+  }
 }
 
 el.answerBtn.addEventListener('click', async () => {
+  if (state.busy) return;
   const question = el.question.value.trim();
   if (question.length < 3) {
     showNotice(el.askMsg, 'Ask at least three characters before requesting an answer.', true);
@@ -523,7 +574,9 @@ el.answerBtn.addEventListener('click', async () => {
     return;
   }
   clearNotice(el.askMsg);
+  state.busy = true;
   el.answerBtn.disabled = true;
+  el.askBtn.disabled = true;
   el.answerBtn.textContent = 'Asking Groq…';
   setBusy('busy', 'Generating grounded answer', 'Answering…');
   beginProgress();
@@ -533,11 +586,14 @@ el.answerBtn.addEventListener('click', async () => {
     if (!res.ok) await handleQueryError(res, payload, el.askMsg);
     else renderAnswer(payload);
   } catch (err) {
+    el.emptyState.hidden = false;
     showNotice(el.askMsg, err.message || 'Could not generate an answer.', true);
   } finally {
+    state.busy = false;
     endProgress();
     el.answerBtn.textContent = 'Grounded answer';
     el.answerBtn.disabled = !state.allowAI;
+    el.askBtn.disabled = false;
     await refreshStatus();
   }
 });

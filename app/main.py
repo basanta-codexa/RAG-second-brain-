@@ -2,8 +2,7 @@
 
 Purpose: let you upload a PDF/Markdown/text document, merge it with the
 existing corpus (``data/``), and check which chunks come back for a question.
-Uploading happens entirely on this machine. The service does not generate
-answers; it shows the evidence.
+Uploading happens entirely on this machine.
 
 Run:
     uvicorn app.main:app --reload
@@ -21,6 +20,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
+import threading
 from pathlib import Path
 from typing import Literal
 
@@ -30,11 +31,17 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import search as srch
-from loader import SUPPORTED_SUFFIXES
 from app import generate
+from loader import SUPPORTED_SUFFIXES
+from qdrant_store import StoreUnavailable
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 ALLOWED_EXTENSIONS = frozenset(SUPPORTED_SUFFIXES)
+_RESERVED_WINDOWS_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
 
 
 Mode = Literal["vector", "hybrid", "rerank"]
@@ -44,74 +51,98 @@ class SearchRequest(BaseModel):
     question: str = Field(min_length=3, max_length=2000)
     top_k: int = Field(default=srch.DEFAULT_TOP_K, ge=1, le=10)
     mode: Mode = "vector"
-    source: str | None = Field(default=None, max_length=120,
-                               pattern=r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,119}$")
+    # Origin ("data/notes.md") or filename ("notes.md"). Validated against the
+    # corpus at query time rather than with a regex that rejects real names.
+    source: str | None = Field(default=None, max_length=300)
 
 
-class AnswerRequest(BaseModel):
-    question: str = Field(min_length=3, max_length=2000)
-    top_k: int = Field(default=srch.DEFAULT_TOP_K, ge=1, le=10)
+class AnswerRequest(SearchRequest):
     consent: bool  # must be True; the UI sets it from the session-wide toggle
-    mode: Mode = "vector"
-    source: str | None = Field(default=None, max_length=120,
-                               pattern=r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,119}$")
 
 
 def sanitize_filename(raw: str) -> str:
-    """Reduce a user-supplied name to a safe basename inside the upload dir."""
+    """Reduce a user-supplied name to a safe basename, preserving its suffix.
+
+    The suffix is extracted first so truncation or non-ASCII characters in the
+    stem can never turn a supported upload into an invisible file.
+    """
     name = Path(raw or "").name            # drop any directory components
-    name = name.replace(" ", "_")
-    name = re.sub(r"[^A-Za-z0-9._-]", "_", name)  # nothing else survives
-    name = re.sub(r"_+", "_", name)               # collapse runs
-    name = re.sub(r"_+\.", ".", name)             # no underscore hugging the extension
-    name = name.strip("._")                       # no hidden files / dotfile games
     if not name:
         raise HTTPException(status_code=400, detail="the uploaded file has no usable name")
-    return name[:120]
+
+    suffix = Path(name).suffix.lower()
+    stem = name[:-len(suffix)] if suffix else name
+    stem = stem.replace(" ", "_")
+    stem = re.sub(r"[^A-Za-z0-9._-]", "_", stem)  # nothing else survives
+    stem = re.sub(r"_+", "_", stem)               # collapse runs
+    stem = re.sub(r"_+\.", ".", stem)             # no underscore hugging a dot
+    stem = stem.strip("._")
+
+    if not stem:
+        if not suffix:
+            raise HTTPException(status_code=400, detail="the uploaded file has no usable name")
+        stem = "file"
+
+    if stem.split(".")[0].upper() in _RESERVED_WINDOWS_NAMES:
+        stem = f"_{stem}"
+
+    max_stem = max(1, 120 - len(suffix))
+    stem = stem[:max_stem].rstrip("._") or "file"
+    return f"{stem}{suffix}"
 
 
-def file_info(path: Path, source: str) -> dict:
+def file_info(path: Path, origin: str) -> dict:
     stat = path.stat()
     return {
         "name": path.name,
+        "origin": origin,
         "bytes": stat.st_size,
         "modified": stat.st_mtime,
-        "kind": source,
     }
 
 
 def create_app(data_dir: str | None = None, upload_dir: str | None = None,
-               model_name: str | None = None, max_mb: int | None = None) -> FastAPI:
+               model_name: str | None = None, max_mb: int | None = None,
+               chunk_size: int | None = None, overlap: int | None = None) -> FastAPI:
     data_path = Path(data_dir or os.getenv("SECOND_BRAIN_DATA", "data"))
     upload_path = Path(upload_dir or os.getenv("SECOND_BRAIN_UPLOADS", "uploads"))
     model = model_name or os.getenv("SECOND_BRAIN_MODEL", srch.DEFAULT_MODEL)
     max_bytes = (int(max_mb or os.getenv("SECOND_BRAIN_MAX_MB", "25")) * 1024 * 1024)
+    chunk_size = int(chunk_size or os.getenv("SECOND_BRAIN_CHUNK_SIZE", srch.DEFAULT_CHUNK_SIZE))
+    overlap = int(overlap or os.getenv("SECOND_BRAIN_OVERLAP", srch.DEFAULT_OVERLAP))
 
     # Loading PyTorch + 400 MB of weights takes ~8s — do it once per process,
     # and reuse it for every query (not every request).
-    _encoder_cache: dict = {"instance": None}
+    encoder_lock = threading.Lock()
+    encoder_cache: dict = {"instance": None}
+    index_lock = threading.Lock()
+    index_cache: dict = {"key": None, "index": None}
 
-    def get_encoder() -> srch.SentenceTransformer:
-        if _encoder_cache["instance"] is None:
-            _encoder_cache["instance"] = srch.SentenceTransformer(model)
-        return _encoder_cache["instance"]
+    def get_encoder():
+        with encoder_lock:
+            if encoder_cache["instance"] is None:
+                encoder_cache["instance"] = srch.load_encoder(model)
+            return encoder_cache["instance"]
 
     data_path.mkdir(parents=True, exist_ok=True)
     upload_path.mkdir(parents=True, exist_ok=True)
 
-    app = FastAPI(title="Second Brain — test bench", version="1.0.0", docs_url=None, redoc_url=None)
+    app = FastAPI(title="Second Brain — test bench", version="2.0.0",
+                  docs_url=None, redoc_url=None)
     app.state.data_dir = data_path
     app.state.upload_dir = upload_path
     app.state.model = model
     app.state.max_bytes = max_bytes
+    app.state.chunk_size = chunk_size
+    app.state.overlap = overlap
 
     def supported_files(folder: Path) -> list[dict]:
         if not folder.is_dir():
             return []
-        return [file_info(p, folder.name) for p in sorted(folder.iterdir())
+        return [file_info(p, f"{folder.name}/{p.name}") for p in sorted(folder.iterdir())
                 if p.is_file() and p.suffix.lower() in ALLOWED_EXTENSIONS]
 
-    def corpus_or_400() -> dict:
+    def corpus_or_409() -> dict:
         base, uploads = supported_files(data_path), supported_files(upload_path)
         if not base and not uploads:
             raise HTTPException(
@@ -119,6 +150,63 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
                 detail="no documents yet — upload a PDF/Markdown/text file first, or add files to data/",
             )
         return {"base": base, "uploads": uploads}
+
+    def directory_token(folder: Path) -> tuple:
+        return tuple(
+            (p.name, p.stat().st_size, p.stat().st_mtime_ns)
+            for p in sorted(folder.iterdir())
+            if p.is_file() and p.suffix.lower() in ALLOWED_EXTENSIONS
+        )
+
+    def current_cache_key() -> tuple:
+        return (
+            str(data_path), str(upload_path), model, chunk_size, overlap,
+            directory_token(data_path), directory_token(upload_path),
+        )
+
+    def invalidate_index() -> None:
+        index_cache["key"] = None
+
+    def sync_index() -> tuple[dict, dict, bool]:
+        """Return (corpus, index, synced_now)."""
+        corpus = corpus_or_409()
+        key = current_cache_key()
+        synced_now = index_cache["key"] != key
+        if synced_now:
+            index_cache["index"] = srch.create_index(
+                [str(data_path), str(upload_path)], model, chunk_size, overlap,
+            )
+            index_cache["key"] = key
+        return corpus, index_cache["index"], synced_now
+
+    def run_search(question: str, top_k: int, mode: Mode, source: str | None
+                   ) -> tuple[dict, dict, list[dict], bool]:
+        try:
+            with index_lock:
+                corpus, index, synced_now = sync_index()
+                if not index["chunks"]:
+                    errors = "; ".join(f"{e['file']}: {e['error']}" for e in index["errors"])
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"no readable documents could be indexed. {errors}".strip(),
+                    )
+                encoder = index["encoder"] or get_encoder()
+                hits = srch.query_index(
+                    index, encoder, question, top_k=top_k, source=source,
+                    hybrid=mode == "hybrid", rerank=mode == "rerank",
+                )
+        except StoreUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except HTTPException:
+            raise
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"embedding/reranking dependency missing: {exc}. Install requirements.txt.",
+            ) from exc
+        except (RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=f"indexing failed: {exc}") from exc
+        return corpus, index, hits, synced_now
 
     # ---------- static UI ----------
 
@@ -133,15 +221,15 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
     @app.get("/api/status")
     def status() -> dict:
         base, uploads = supported_files(data_path), supported_files(upload_path)
-        names = sorted({f["name"] for f in base} | {f["name"] for f in uploads})
+        sources = sorted({f["origin"] for f in base} | {f["origin"] for f in uploads})
         return {
-            "base": [f for f in base],
-            "uploads": [f for f in uploads],
+            "base": base,
+            "uploads": uploads,
             "documents": len(base) + len(uploads),
             "model": model,
             "max_mb": max_bytes // (1024 * 1024),
             "max_upload_bytes": max_bytes,
-            "sources": names,
+            "sources": sources,
         }
 
     @app.get("/api/index-status")
@@ -157,35 +245,48 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
     # ---------- upload / clear ----------
 
     @app.post("/api/upload")
-    async def upload(file: UploadFile = File(...)) -> dict:
+    async def upload(file: UploadFile = File(...)) -> dict:  # noqa: B008 — FastAPI idiom
         suffix = Path(file.filename or "").suffix.lower()
         if suffix not in ALLOWED_EXTENSIONS:
-            raise HTTPException(status_code=400, detail=f"unsupported file type '{suffix or 'unknown'}'; allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"unsupported file type '{suffix or 'unknown'}'; "
+                       f"allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
+            )
 
         safe_name = sanitize_filename(file.filename or "")
+        if Path(safe_name).suffix.lower() not in ALLOWED_EXTENSIONS:
+            raise HTTPException(status_code=400, detail="unsupported file type after sanitization")
+
         dest = upload_path / safe_name
         replaced = dest.exists()
-
         written = 0
+
+        # Write to a temporary file in the same directory, then replace the
+        # destination atomically. A rejected upload must never truncate the
+        # existing document with the same name.
+        fd, tmp_name = tempfile.mkstemp(prefix=".upload-", dir=upload_path)
         try:
-            with dest.open("wb") as handle:
+            with os.fdopen(fd, "wb") as handle:
                 while chunk := await file.read(1024 * 1024):
                     written += len(chunk)
                     if written > max_bytes:
                         raise HTTPException(
                             status_code=413,
-                            detail=f"file exceeds the {app.state.max_bytes // (1024 * 1024)} MB limit",
+                            detail=f"file exceeds the {max_bytes // (1024 * 1024)} MB limit",
                         )
                     handle.write(chunk)
+            if written == 0:
+                raise HTTPException(status_code=400, detail="empty file rejected")
+            os.replace(tmp_name, dest)
         except BaseException:
-            # never leave a half-written or oversized upload behind
-            dest.unlink(missing_ok=True)
+            try:
+                os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass
             raise
 
-        if written == 0:
-            dest.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail="empty file rejected")
-
+        invalidate_index()
         return {"name": safe_name, "bytes": written, "replaced": replaced}
 
     @app.delete("/api/uploads/{name}")
@@ -195,6 +296,7 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
         if not target.is_file():
             raise HTTPException(status_code=404, detail=f"no such upload: {safe}")
         target.unlink()
+        invalidate_index()
         return {"removed": safe}
 
     @app.post("/api/uploads/clear")
@@ -202,22 +304,16 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
         removed = [p for p in upload_path.iterdir() if p.is_file()]
         for p in removed:
             p.unlink()
+        invalidate_index()
         return {"removed": len(removed)}
 
-    def build_index_or_fail():
-        corpus = corpus_or_400()
-        index = srch.create_index([str(data_path), str(upload_path)], model)
-        encoder = index["encoder"] or get_encoder()
-        return corpus, index, encoder
-
-    def mode_kwargs(mode: Mode) -> dict:
-        return {"hybrid": mode == "hybrid", "rerank": mode == "rerank"}
+    # ---------- result shape ----------
 
     def hit_items(hits: list[dict]) -> list[dict]:
         items = []
         for i, h in enumerate(hits):
             item = {
-                "rank": i + 1,
+                "rank": h.get("rank", i + 1),
                 "score": round(h["score"], 4),
                 "source": h["source"],
                 "page": h["page"],
@@ -231,20 +327,20 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             items.append(item)
         return items
 
+    def warnings(index: dict) -> list[dict]:
+        return list(index.get("errors", []))
+
     # ---------- search ----------
 
     @app.post("/api/search")
     def search_endpoint(req: SearchRequest) -> dict:
-        corpus, index, encoder = build_index_or_fail()
-        hits = srch.query_index(index, encoder, req.question, top_k=req.top_k,
-                                source=req.source, **mode_kwargs(req.mode))
-
-        items = hit_items(hits)
+        corpus, index, hits, synced_now = run_search(req.question, req.top_k, req.mode, req.source)
         return {
-            "hits": items,
-            "cached_index": index["encoder"] is None,
+            "hits": hit_items(hits),
+            "cached_index": not synced_now,
             "model": index["model_name"],
             "documents": len(corpus["base"]) + len(corpus["uploads"]),
+            "warnings": warnings(index),
         }
 
     # ---------- grounded answers (Groq) ----------
@@ -257,22 +353,28 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
                 detail="generation requires opting in for this session — toggle the allow switch first",
             )
 
-        corpus, index, encoder = build_index_or_fail()
-        hits = srch.query_index(index, encoder, req.question, top_k=req.top_k,
-                                source=req.source, **mode_kwargs(req.mode))
+        corpus, index, hits, synced_now = run_search(
+            req.question, req.top_k, req.mode, req.source)
+        if not hits:
+            result = generate.answer(req.question, [])
+        else:
+            try:
+                result = generate.answer(req.question, hits)
+            except generate.GenerationError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+            except ImportError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"groq package missing: {exc}. Install requirements.txt.",
+                ) from exc
 
-        try:
-            result = generate.answer(req.question, hits)
-        except RuntimeError as exc:
-            msg = str(exc)
-            raise HTTPException(status_code=503 if "GROQ_API_KEY" in msg else 502, detail=msg)
-
-        items = hit_items(hits)
+        used = result.pop("used", [])
         return {
             **result,
-            "hits": items,  # same shape as /api/search — UI renders these as the evidence list
-            "cached_index": index["encoder"] is None,
+            "hits": hit_items(used),  # exactly the passages sent, truncated to prompt size
+            "cached_index": not synced_now,
             "documents": len(corpus["base"]) + len(corpus["uploads"]),
+            "warnings": warnings(index),
         }
 
     return app
@@ -283,4 +385,4 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)

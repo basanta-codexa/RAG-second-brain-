@@ -29,14 +29,14 @@
             <span class="brand-dot"></span>
           </div>
           <div class="brand-text">
-            <p class="eyebrow">Local retrieval · nothing leaves this machine</p>
+            <p class="eyebrow">Local retrieval · your documents stay on this machine</p>
             <h1>Second Brain — Document Test Bench</h1>
           </div>
         </div>
         <div class="topbar-meta" aria-live="polite">
           <span class="dot" id="health-dot"></span>
           <span id="health-label">Checking status…</span>
-          <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false">Dark</button>
+          <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" aria-label="Toggle dark mode">Dark</button>
         </div>
       </div>
     </header>
@@ -173,7 +173,7 @@
             <summary>What was sent to Groq for this answer</summary>
             <ul id="sent-list" class="sent-list"></ul>
           </details>
-          <p class="answer-audit">Session consent on — nothing is sent until you click <em>Grounded answer</em>. Passages are deleted from Groq after inference per their policy; your key, your quota.</p>
+          <p class="answer-audit">Session consent on — nothing is sent until you click <em>Grounded answer</em>. The list below contains exactly the passages included in the prompt; citations outside that list are flagged as invalid.</p>
         </section>
 
         <div id="ask-progress" class="ask-progress" hidden>
@@ -181,7 +181,7 @@
             <span class="progress-stage" id="progress-stage">Preparing…</span>
             <span class="progress-elapsed mono" id="progress-elapsed">0.0s</span>
           </div>
-          <div class="progress-track" role="progressbar" aria-label="Indexing progress" aria-valuemin="0" aria-valuemax="100">
+          <div class="progress-track" id="progress-track" role="progressbar" aria-label="Indexing progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
             <div class="progress-fill" id="progress-fill"></div>
           </div>
           <p class="progress-hint" id="progress-hint"></p>
@@ -223,7 +223,7 @@
 
     <footer class="foot">
       <p>Second Brain · local test bench · files stay on this computer · unsupported types, empty files and oversized uploads are rejected</p>
-      <p class="foot-right">Built with FastAPI · sentence-transformers · no cloud, no account, no telemetry</p>
+      <p class="foot-right">Built with FastAPI · sentence-transformers · retrieval runs locally, no telemetry</p>
     </footer>
 
     <script src="/static/app.js" defer></script>
