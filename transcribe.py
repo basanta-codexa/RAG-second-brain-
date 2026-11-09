@@ -9,6 +9,8 @@ Reads the API key from the GEMINI_API_KEY environment variable.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import random
 import sys
@@ -16,6 +18,7 @@ import time
 from pathlib import Path
 
 import pymupdf as fitz  # PyMuPDF
+from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
@@ -40,6 +43,59 @@ def cache_file(cache_dir: Path, page_number: int) -> Path:
     return cache_dir / f"page_{page_number:03d}.md"
 
 
+def source_manifest(cache_dir: Path) -> Path:
+    return cache_dir / ".source.json"
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def bind_cache_to_pdf(cache_dir: Path, pdf_path: Path, total: int, force: bool) -> None:
+    """Refuse to mix pages from two different PDFs in one cache directory."""
+    manifest = source_manifest(cache_dir)
+    digest = sha256_file(pdf_path)
+    if manifest.exists():
+        try:
+            previous = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            previous = {}
+        if previous.get("sha256") not in (None, digest) and not force:
+            raise RuntimeError(
+                f"cache directory {cache_dir} belongs to a different PDF "
+                f"({previous.get('name', 'unknown')}). Use a different --cache-dir "
+                "or pass --force to overwrite it."
+            )
+    atomic_write(
+        manifest,
+        json.dumps({"name": pdf_path.name, "sha256": digest, "pages": total}, indent=2),
+    )
+
+
+def atomic_write(path: Path, text: str) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _permanent_failure(exc: Exception) -> bool:
+    """A bad key/model will not get better after sleeping."""
+    code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    try:
+        code = int(code)
+    except (TypeError, ValueError):
+        return False
+    return 400 <= code < 500 and code != 429
+
+
+class PermanentTranscriptionError(RuntimeError):
+    """401/403/404 etc.: stop the whole run instead of failing every page."""
+
+
 def cached_pages(cache_dir: Path, total: int) -> tuple[dict[int, str], list[int]]:
     """Return (non-empty cached pages, missing/empty page numbers)."""
     done: dict[int, str] = {}
@@ -47,7 +103,10 @@ def cached_pages(cache_dir: Path, total: int) -> tuple[dict[int, str], list[int]
     for i in range(1, total + 1):
         p = cache_file(cache_dir, i)
         if p.exists() and p.stat().st_size > 0:
-            text = p.read_text(encoding="utf-8").strip()
+            try:
+                text = p.read_text(encoding="utf-8").strip()
+            except (OSError, UnicodeDecodeError):
+                text = ""
             if text:
                 done[i] = text
                 continue
@@ -73,6 +132,10 @@ def transcribe_page(client, model: str, png: bytes, max_retries: int) -> str:
             return text
         except Exception as exc:  # API/network/empty-response failures
             last_error = exc
+            if _permanent_failure(exc):
+                raise PermanentTranscriptionError(
+                    f"page failed permanently: {type(exc).__name__}: {str(exc)[:200]}"
+                ) from exc
             backoff = min(120.0, 20.0 * (2 ** (attempt - 1)))  # 20, 40, 80, 120 ...
             wait = backoff * (0.75 + 0.5 * random.random())    # jittered
             print(
@@ -96,6 +159,7 @@ def main() -> int:
     parser.add_argument("--force", action="store_true", help="re-transcribe every page, ignoring the cache")
     args = parser.parse_args()
 
+    load_dotenv(Path(__file__).resolve().with_name(".env"))
     if not os.environ.get("GEMINI_API_KEY"):
         print("ERROR: GEMINI_API_KEY is not set in the environment.", file=sys.stderr)
         return 2
@@ -110,9 +174,21 @@ def main() -> int:
 
     doc = fitz.open(str(pdf_path))
     total = len(doc)
+    try:
+        bind_cache_to_pdf(cache_dir, pdf_path, total, args.force)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        doc.close()
+        return 2
     print(f"{total} pages to transcribe with {args.model}")
 
-    client = genai.Client()  # reads GEMINI_API_KEY from the environment
+    client = None
+    try:
+        client = genai.Client()  # reads GEMINI_API_KEY from the environment
+    except Exception as exc:
+        print(f"ERROR: could not initialize the Gemini client: {exc}", file=sys.stderr)
+        doc.close()
+        return 2
 
     done, missing = cached_pages(cache_dir, total)
     if args.force:
@@ -120,20 +196,42 @@ def main() -> int:
 
     print(f"cache: {len(done)} pages done, {len(missing)} to fetch")
     failed: list[int] = []
+    aborted = False
 
-    for page_number in missing:
-        page = doc.load_page(page_number - 1)
-        png = page.get_pixmap(matrix=fitz.Matrix(args.zoom, args.zoom)).tobytes("png")
-        print(f"page {page_number}: transcribing...")
-        try:
-            text = transcribe_page(client, args.model, png, args.max_retries)
-        except RuntimeError as exc:
-            print(f"page {page_number}: FAILED ({exc})", file=sys.stderr)
-            failed.append(page_number)
-            continue
-        cache_file(cache_dir, page_number).write_text(text, encoding="utf-8")
-        print(f"page {page_number}: ok ({len(text)} chars)")
-        time.sleep(args.pause)
+    try:
+        for page_number in missing:
+            try:
+                page = doc.load_page(page_number - 1)
+                png = page.get_pixmap(matrix=fitz.Matrix(args.zoom, args.zoom)).tobytes("png")
+            except Exception as exc:
+                print(f"page {page_number}: render failed ({exc})", file=sys.stderr)
+                failed.append(page_number)
+                continue
+            print(f"page {page_number}: transcribing...")
+            try:
+                text = transcribe_page(client, args.model, png, args.max_retries)
+            except PermanentTranscriptionError as exc:
+                print(f"page {page_number}: FAILED ({exc})", file=sys.stderr)
+                failed.append(page_number)
+                aborted = True
+                break
+            except RuntimeError as exc:
+                print(f"page {page_number}: FAILED ({exc})", file=sys.stderr)
+                failed.append(page_number)
+                continue
+            atomic_write(cache_file(cache_dir, page_number), text)
+            print(f"page {page_number}: ok ({len(text)} chars)")
+            time.sleep(args.pause)
+    finally:
+        doc.close()
+
+    if aborted:
+        print(
+            "\nAborting: the API rejected the key/model (permanent error). "
+            "Fix GEMINI_API_KEY or --model, then rerun; cached pages are kept.",
+            file=sys.stderr,
+        )
+        return 2
 
     if failed:
         print(
