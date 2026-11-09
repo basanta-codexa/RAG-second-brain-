@@ -1,10 +1,53 @@
 # Second Brain
 
+<p>
+  <img alt="Python 3.11+" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white">
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-local-009688?logo=fastapi&logoColor=white">
+  <img alt="Qdrant" src="https://img.shields.io/badge/Qdrant-vector%20store-DC244C?logo=qdrant&logoColor=white">
+  <img alt="pytest" src="https://img.shields.io/badge/tests-pytest-0A9EDC?logo=pytest&logoColor=white">
+</p>
+
 A local retrieval-augmented generation (RAG) tool for personal documents. It
 indexes PDFs, Markdown, and text files in Qdrant, retrieves relevant passages,
-and can generate cited answers with Groq.
+and can generate cited answers with Groq. An optional Gemini script transcribes
+handwritten PDFs first.
 
-It also includes an optional Gemini-based OCR script for handwritten PDFs.
+> Documents, chunks, and index state stay on this machine. Network calls happen
+> only for optional OCR and generated answers.
+
+## At a glance
+
+| Area | Implementation |
+| --- | --- |
+| Interface | CLI and local FastAPI web UI |
+| Storage | Qdrant vector database |
+| Embeddings | `sentence-transformers`, `BAAI/bge-base-en-v1.5` by default |
+| Retrieval | Vector search, BM25 hybrid, cross-encoder reranking |
+| Answers | Optional Groq generation with citation checks |
+| OCR | Optional Gemini transcription for scanned PDFs |
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[PDF / Markdown / TXT] --> B[loader.py]
+    B --> C[chunker.py]
+    C --> D[search.py<br/>embed changed files]
+    D --> E[(Qdrant)]
+
+    Q[Question] --> R[search.py<br/>embed query]
+    R --> E
+    E --> S[Ranked passages]
+    S --> T[CLI]
+    S --> U[FastAPI + web UI]
+    U -. opt-in .-> V[Groq answer]
+
+    A -. optional OCR .-> W[transcribe.py + Gemini]
+    W --> A
+```
+
+Indexing is incremental. Each file is content-hashed, only new or changed files
+are embedded, and stale point IDs are removed after replacements are written.
 
 ## Requirements
 
@@ -59,19 +102,6 @@ python chunker.py
 python inspect_chunks.py find "cap theorem"
 ```
 
-Evaluate retrieval:
-
-```powershell
-python evaluate.py --k 3
-python evaluate.py --k 3 --hybrid
-python evaluate.py --k 3 --rerank
-python evaluate.py --k 3 --fail-under 0.8
-```
-
-`evaluate.py` reports hit@1, hit@k, and MRR. It also reports strict and lenient
-subsets: strict tests require the correct page in a multi-page source; lenient
-tests accept any page or come from a single-page source.
-
 Transcribe a handwritten PDF:
 
 ```powershell
@@ -89,6 +119,36 @@ python -m uvicorn app.main:app --reload
 Open `http://127.0.0.1:8000`. The app accepts `.pdf`, `.md`, and `.txt` uploads
 up to 25 MB by default. The index updates on the next query.
 
+### Retrieval modes
+
+| Mode | Behavior |
+| --- | --- |
+| `vector` | Dense cosine search; default |
+| `hybrid` | BM25 plus vector results merged with reciprocal rank fusion |
+| `rerank` | Cross-encoder reranking of vector candidates |
+
+Source filters accept an origin such as `data/notes.md` or a filename such as
+`notes.pdf`.
+
+## Evaluation
+
+```powershell
+python evaluate.py --k 3
+python evaluate.py --k 3 --hybrid
+python evaluate.py --k 3 --rerank
+python evaluate.py --k 3 --fail-under 0.8
+```
+
+| Metric | Meaning |
+| --- | --- |
+| `hit@1` | Expected source/page ranked first |
+| `hit@k` | Expected source/page present in the top *k* |
+| `MRR` | Mean reciprocal rank of the first correct result |
+
+Results are split into strict and lenient subsets. Strict tests require the
+correct page in a multi-page source; lenient tests accept any page or come from
+a single-page source. `--fail-under` exits non-zero for CI.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -102,40 +162,38 @@ up to 25 MB by default. The index updates on the next query.
 | `SECOND_BRAIN_QDRANT` | `http://127.0.0.1:6333` | Qdrant URL |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Answer model |
 
-## How it works
+## Project structure
 
 ```text
-loader.py        PDF/Markdown/text -> page records
-chunker.py       page records -> overlapping, sentence-aware chunks
-qdrant_store.py  collection lifecycle, filters, and index state
-search.py        incremental embedding, retrieval, hybrid search, reranking
-evaluate.py      retrieval metrics against testset.py
-transcribe.py    handwritten PDF -> Markdown; resumable page cache
-app/             FastAPI service and browser UI
-data/            base corpus (gitignored)
-uploads/         web uploads (gitignored)
-transcripts/     OCR cache (gitignored)
-.cache/          index state and progress (gitignored)
-tests/           pytest suite
+.
+├── app/                 FastAPI service and browser UI
+├── tests/               pytest suite
+├── data/                base corpus (gitignored)
+├── uploads/             web uploads (gitignored)
+├── transcripts/         OCR page cache (gitignored)
+├── loader.py            PDF/Markdown/text -> page records
+├── chunker.py           page records -> sentence-aware chunks
+├── qdrant_store.py      collection lifecycle, filters, and index state
+├── search.py            embedding, retrieval, hybrid search, reranking
+├── evaluate.py          hit@1 / hit@k / MRR
+├── transcribe.py        handwritten PDF -> Markdown
+└── testset.py           retrieval test cases
 ```
 
-Each file is content-hashed. Only new or changed files are embedded. Qdrant
-state is stored in `.cache/qdrant_state.json`; a change to the embedding model,
-chunk configuration, or collection layout triggers a full rebuild.
+Qdrant state is stored in `.cache/qdrant_state.json`. A change to the embedding
+model, chunk configuration, or collection layout triggers a full rebuild.
 
-Retrieval defaults to vector search. Hybrid BM25/vector search and cross-encoder
-reranking are available through the CLI and web UI. Source filters accept an
-origin such as `data/notes.md` or a filename such as `notes.pdf`.
+## Web API
 
-The web API exposes:
-
-- `GET /api/status`
-- `GET /api/index-status`
-- `POST /api/upload`
-- `DELETE /api/uploads/<name>`
-- `POST /api/uploads/clear`
-- `POST /api/search`
-- `POST /api/answer`
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/status` | Corpus, sources, model, and upload limit |
+| `GET` | `/api/index-status` | Live indexing progress |
+| `POST` | `/api/upload` | Upload one document |
+| `DELETE` | `/api/uploads/<name>` | Remove one upload |
+| `POST` | `/api/uploads/clear` | Remove all uploads |
+| `POST` | `/api/search` | Retrieve passages |
+| `POST` | `/api/answer` | Generate an answer; requires session consent |
 
 ## Privacy and security
 
