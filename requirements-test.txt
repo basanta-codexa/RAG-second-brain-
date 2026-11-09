@@ -1,0 +1,14 @@
+# Test/CI dependencies: enough to import and exercise the app, the planner,
+# the API, and the pure generation helpers without downloading torch.
+# The embedding/reranker models are imported lazily and are not needed here.
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+python-dotenv>=1.0
+pypdf>=4.0
+numpy>=1.26
+qdrant-client>=1.9
+rank-bm25>=0.2.2
+pytest>=8.0
+httpx>=0.27
+ruff>=0.5

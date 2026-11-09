@@ -1,4 +1,3 @@
-# Development-only dependencies (tests, linting).
-# Runtime dependencies live in requirements.txt.
-pytest>=8.0
-httpx>=0.27   # required by fastapi.testclient
+# Development-only dependencies. Kept as an alias for older setup notes;
+# requirements-test.txt is the canonical list.
+-r requirements-test.txt
