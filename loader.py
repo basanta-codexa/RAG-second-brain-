@@ -17,6 +17,24 @@ _PAGE_MARKER = re.compile(r"<<<PAGE (\d+)>>>")
 SUPPORTED_SUFFIXES = {".pdf", ".txt", ".md"}
 
 
+def read_text_file(path: Path) -> str:
+    """Read a text file, tolerating the encodings a local corpus actually has.
+
+    UTF-8 (with or without BOM) is the norm; Windows notes are often cp1252.
+    Anything else is a hard error with a message the caller can show the user.
+    """
+    raw = path.read_bytes()
+    for encoding in ("utf-8-sig", "cp1252"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise RuntimeError(
+        f"{path.name}: not valid UTF-8 or cp1252 — re-save it as UTF-8 "
+        "(PowerShell: Set-Content -Encoding utf8)"
+    )
+
+
 def load_pdf(path: Path) -> list[dict]:
     """Read a PDF and return one record per non-empty page."""
     try:
@@ -41,7 +59,7 @@ def load_text(path: Path) -> list[dict]:
 
     Content before the first marker is kept as page 0 instead of being dropped.
     """
-    text = path.read_text(encoding="utf-8")
+    text = read_text_file(path)
     parts = _PAGE_MARKER.split(text)
     if len(parts) == 1:
         return [{"text": text, "source": path.name, "page": 1}]
@@ -51,7 +69,7 @@ def load_text(path: Path) -> list[dict]:
     if front:
         records.append({"text": parts[0], "source": path.name, "page": 0})
     # parts looks like [front, "1", text1, "2", text2, ...]
-    for num, body in zip(parts[1::2], parts[2::2]):
+    for num, body in zip(parts[1::2], parts[2::2], strict=False):
         if body.strip():
             records.append({"text": body, "source": path.name, "page": int(num)})
     return records

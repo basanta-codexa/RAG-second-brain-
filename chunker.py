@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import re
 
 from loader import load_folder
+
+_SENTENCE_END = re.compile(r"""[.!?]["')\]]?(?=\s)""")
 
 
 def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150) -> list[str]:
@@ -24,9 +27,12 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150) -> list[str
 
         # try to end at a sentence boundary instead of mid-sentence
         if end < n:
-            cut = text.rfind(". ", start, end)
-            if cut > start + chunk_size // 2:  # only if it's not too early
-                end = cut + 1  # keep the sentence-ending period with this chunk
+            cut = None
+            for match in _SENTENCE_END.finditer(text, start, end):
+                if match.end() > start + chunk_size // 2:
+                    cut = match.end()
+            if cut is not None:
+                end = cut  # keep the punctuation with this chunk
 
         chunk = text[start:end].strip()
         if chunk:
@@ -34,7 +40,7 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150) -> list[str
 
         if end >= n:
             break
-        start = end - overlap  # step back to create the overlap
+        start = max(end - overlap, start + 1)
     return chunks
 
 

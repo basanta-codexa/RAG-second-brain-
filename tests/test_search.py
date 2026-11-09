@@ -74,6 +74,7 @@ def test_pure_vector_search_uses_store():
 
 def test_hybrid_uses_bm25_to_break_vector_ties():
     from rank_bm25 import BM25Okapi
+
     from search import _tokenize
 
     chunks = _chunks()
@@ -93,3 +94,15 @@ def test_cross_encoder_reranker_reorders():
                        FakeEncoder(), "anything", top_k=1, rerank=True)
     assert hits[0]["source"] == "c.md"
     assert hits[0]["rerank_score"] == 100.0
+
+
+def test_hybrid_source_filter_scopes_bm25_to_the_same_rows():
+    hits = query_index(_index(_chunks()), FakeEncoder(), "roof xyzzy",
+                       top_k=3, hybrid=True, source="a.md")
+    assert [h["source"] for h in hits] == ["a.md"]
+    assert "bm25_score" in hits[0]
+
+
+def test_source_filter_with_no_matches_returns_empty():
+    hits = query_index(_index(_chunks()), FakeEncoder(), "roof", top_k=3, source="missing.md")
+    assert hits == []

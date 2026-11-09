@@ -7,7 +7,11 @@ Requires a running Qdrant (docker):
 State lives in .cache/qdrant_state.json — maps "<origin>/<file>" to the
 sha256 and Qdrant point ids it produced. Any file whose hash changed is
 re-embedded; deleted files have their points removed. Rebuild whole only
-when the embedding model or the Qdrant collection disappears.
+when the embedding model, the chunking configuration, or the state schema
+changes, or when the Qdrant collection disappears.
+
+The planner is a pure function so the dangerous parts can be tested without
+a server. The store only performs I/O.
 """
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ import os
 import uuid
 from pathlib import Path
 
+import numpy as np
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -30,9 +35,15 @@ from qdrant_client.models import (
 )
 
 COLLECTION = "second_brain"
+SCHEMA_VERSION = 2
 STATE_PATH = Path(".cache") / "qdrant_state.json"
-QDRANT_URL = os.getenv("SECOND_BRAIN_QDRANT", "http://127.0.0.1:6333")
+DEFAULT_QDRANT_URL = "http://127.0.0.1:6333"
+QDRANT_URL = os.getenv("SECOND_BRAIN_QDRANT", DEFAULT_QDRANT_URL)
 _NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "second-brain/chunks")
+
+
+class StoreUnavailable(RuntimeError):
+    """Qdrant is not reachable; the caller should surface this as 503."""
 
 
 def sha256_file(path: Path) -> str:
@@ -52,38 +63,81 @@ def point_id(chunk_id: str) -> str:
     return str(uuid.uuid5(_NAMESPACE, chunk_id))
 
 
+def index_signature(model_name: str, chunk_size: int, overlap: int) -> dict:
+    """Everything that changes the meaning of a stored vector or chunk id."""
+    return {
+        "schema": SCHEMA_VERSION,
+        "model": model_name,
+        "chunk_size": chunk_size,
+        "overlap": overlap,
+    }
+
+
+def _valid_state(state: dict | None) -> bool:
+    if not isinstance(state, dict):
+        return False
+    files = state.get("files")
+    if not isinstance(files, dict):
+        return False
+    for entry in files.values():
+        if not isinstance(entry, dict):
+            return False
+        if not isinstance(entry.get("sha256"), str):
+            return False
+        ids = entry.get("point_ids")
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+            return False
+    return isinstance(state.get("signature"), dict)
+
+
 def plan(files: dict[str, str], state: dict | None,
-         model_name: str, collection_exists: bool) -> dict:
+         signature: dict, collection_exists: bool) -> dict:
     """Decide which files to embed, which points to drop, or a full rebuild.
 
     ``files`` maps file_key -> sha256. ``state`` is the persisted dict (or
-    None). Pure function — unit tested without a Qdrant server.
+    None). ``signature`` is :func:`index_signature`. Pure function.
+
+    ``drop_by_key`` maps the file key whose old points should be removed to
+    those point ids. For changed files the caller must delete them only after
+    the replacement points were upserted successfully.
     """
+    if not _valid_state(state):
+        state = None
+
     if state is None:
-        state = {}
-    old = state.get("files", {})
-    model_changed = state.get("model") != model_name
-    collection_lost = bool(old) and not collection_exists
+        return {
+            "to_embed": sorted(files),
+            "drop_by_key": {},
+            "rebuild": True,
+            "state": {"signature": signature, "files": {}},
+        }
 
-    if model_changed or collection_lost:
-        drop_ids = [pid for f in old.values() for pid in f["point_ids"]]
-        new_state = {"model": model_name, "files": {}, "collection_built": False}
-        return {"to_embed": sorted(files), "drop_ids": drop_ids,
-                "rebuild": True, "state": new_state}
-
+    old = state["files"]
     old_keys, new_keys = set(old), set(files)
     stale = old_keys - new_keys
     changed = {k for k in new_keys & old_keys if old[k]["sha256"] != files[k]}
     drop_keys = stale | changed
-    drop_ids = [pid for k in drop_keys for pid in old[k]["point_ids"]]
 
-    new_state = {"model": model_name, "files": dict(old), "collection_built": True}
+    drop_by_key = {k: list(old[k]["point_ids"]) for k in drop_keys}
+    new_state = {"signature": signature, "files": dict(old)}
     for k in drop_keys:
         new_state["files"].pop(k, None)
 
-    to_embed = sorted((new_keys - old_keys) | changed)
-    return {"to_embed": to_embed, "drop_ids": drop_ids,
-            "rebuild": False, "state": new_state}
+    rebuild = state.get("signature") != signature or (bool(old) and not collection_exists)
+    if rebuild:
+        to_embed = sorted(files)
+        new_state = {"signature": signature, "files": {}}
+        # The collection, and every id in it, is about to disappear.
+        drop_by_key = {}
+    else:
+        to_embed = sorted((new_keys - old_keys) | changed)
+
+    return {
+        "to_embed": to_embed,
+        "drop_by_key": drop_by_key,
+        "rebuild": rebuild,
+        "state": new_state,
+    }
 
 
 class Store:
@@ -91,38 +145,50 @@ class Store:
 
     def __init__(self, url: str | None = None, collection: str = COLLECTION,
                  state_path: Path | None = None) -> None:
-        self.url = url or QDRANT_URL
+        self.url = url or os.getenv("SECOND_BRAIN_QDRANT", QDRANT_URL)
         self.collection = collection
         self.state_path = Path(state_path) if state_path else STATE_PATH
         try:
             self.client = QdrantClient(url=self.url, timeout=10)
             self.client.get_collections()  # cheap connectivity check
         except Exception as exc:
-            raise RuntimeError(
+            raise StoreUnavailable(
                 f"Qdrant is not reachable at {self.url}. "
                 "Start it: docker start second-brain-qdrant "
                 f"(or recreate it — see README). Underlying error: {exc}"
             ) from exc
+
+    def _fail(self, action: str, exc: Exception):
+        raise StoreUnavailable(
+            f"Qdrant {action} failed at {self.url}: {exc}"
+        ) from exc
 
     # ---------- collection lifecycle ----------
 
     def exists(self) -> bool:
         try:
             return self.client.collection_exists(self.collection)
-        except Exception:
-            return False
+        except Exception as exc:
+            self._fail("connection check", exc)
 
     def create(self, vector_size: int) -> None:
         if self.exists():
             return
-        self.client.create_collection(
-            collection_name=self.collection,
-            vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
-        )
+        try:
+            self.client.create_collection(
+                collection_name=self.collection,
+                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+            )
+        except Exception as exc:
+            self._fail("collection create", exc)
 
     def drop(self) -> None:
-        if self.exists():
+        if not self.exists():
+            return
+        try:
             self.client.delete_collection(self.collection)
+        except Exception as exc:
+            self._fail("collection drop", exc)
 
     # ---------- state ----------
 
@@ -130,9 +196,10 @@ class Store:
         if not self.state_path.exists():
             return None
         try:
-            return json.loads(self.state_path.read_text(encoding="utf-8"))
+            state = json.loads(self.state_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return None
+        return state if _valid_state(state) else None
 
     def save_state(self, state: dict) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,18 +210,34 @@ class Store:
     # ---------- writes ----------
 
     def delete_points(self, point_ids: list[str]) -> None:
-        if not point_ids:
+        if not point_ids or not self.exists():
             return
-        self.client.delete(
-            collection_name=self.collection,
-            points_selector=PointIdsList(points=point_ids),
-        )
+        try:
+            self.client.delete(
+                collection_name=self.collection,
+                points_selector=PointIdsList(points=point_ids),
+            )
+        except Exception as exc:
+            self._fail("point delete", exc)
 
     def delete_by_origin(self, origin: str) -> None:
+        if not self.exists():
+            return
         filt = Filter(must=[FieldCondition(key="origin", match=MatchValue(value=origin))])
-        self.client.delete(collection_name=self.collection, points_selector=FilterSelector(filter=filt))
+        try:
+            self.client.delete(collection_name=self.collection,
+                               points_selector=FilterSelector(filter=filt))
+        except Exception as exc:
+            self._fail("origin delete", exc)
 
     def upsert(self, chunks: list[dict], vectors) -> list[str]:
+        arr = np.asarray(vectors, dtype=np.float32)
+        if arr.ndim == 1:
+            if len(chunks) != 1:
+                raise ValueError("one vector expected for one chunk")
+            arr = arr.reshape(1, -1)
+        if arr.ndim != 2 or arr.shape[0] != len(chunks):
+            raise ValueError("chunks and vectors must have the same length")
         ids = [point_id(c["chunk_id"]) for c in chunks]
         points = [
             PointStruct(
@@ -168,25 +251,38 @@ class Store:
                     "origin": c["origin"],
                 },
             )
-            for pid, vec, c in zip(ids, vectors, chunks)
+            for pid, vec, c in zip(ids, arr, chunks, strict=True)
         ]
-        self.client.upsert(collection_name=self.collection, points=points)
+        try:
+            self.client.upsert(collection_name=self.collection, points=points)
+        except Exception as exc:
+            self._fail("upsert", exc)
         return ids
 
     # ---------- reads ----------
 
+    @staticmethod
+    def _source_filter(source: str | None) -> Filter | None:
+        if not source:
+            return None
+        # Accept either an origin ("data/notes.md") or a bare filename
+        # ("notes.md"). Origins are unique; filenames are not.
+        return Filter(should=[
+            FieldCondition(key="source", match=MatchValue(value=source)),
+            FieldCondition(key="origin", match=MatchValue(value=source)),
+        ])
+
     def search(self, vector, limit: int, source: str | None = None):
-        query_filter = (
-            Filter(must=[FieldCondition(key="source", match=MatchValue(value=source))])
-            if source else None
-        )
-        response = self.client.query_points(
-            collection_name=self.collection,
-            query=[float(x) for x in vector],
-            limit=limit,
-            with_payload=True,
-            query_filter=query_filter,
-        )
+        try:
+            response = self.client.query_points(
+                collection_name=self.collection,
+                query=np.asarray(vector, dtype=float).reshape(-1).tolist(),
+                limit=limit,
+                with_payload=True,
+                query_filter=self._source_filter(source),
+            )
+        except Exception as exc:
+            self._fail("search", exc)
         hits = []
         for point in response.points:
             p = point.payload or {}
@@ -203,15 +299,21 @@ class Store:
     def count(self) -> int:
         if not self.exists():
             return 0
-        return self.client.count(self.collection, exact=True).count
+        try:
+            return self.client.count(collection_name=self.collection, exact=True).count
+        except Exception as exc:
+            self._fail("count", exc)
 
-    def scroll_all(self, with_vectors: bool = False, limit: int = 512, source: str | None = None) -> list[dict]:
-        query_filter = (
-            Filter(must=[FieldCondition(key="source", match=MatchValue(value=source))])
-            if source else None
-        )
-        points, next_offset = self.client.scroll(
-            collection_name=self.collection,
+    def _scroll(self, **kwargs):
+        try:
+            return self.client.scroll(collection_name=self.collection, **kwargs)
+        except Exception as exc:
+            self._fail("scroll", exc)
+
+    def scroll_all(self, with_vectors: bool = False, limit: int = 512,
+                   source: str | None = None) -> list[dict]:
+        query_filter = self._source_filter(source)
+        points, next_offset = self._scroll(
             limit=limit,
             with_payload=True,
             with_vectors=with_vectors,
@@ -219,8 +321,7 @@ class Store:
         )
         rows = [self._to_row(p, with_vectors) for p in points]
         while next_offset is not None:
-            points, next_offset = self.client.scroll(
-                collection_name=self.collection,
+            points, next_offset = self._scroll(
                 limit=limit,
                 offset=next_offset,
                 with_payload=True,

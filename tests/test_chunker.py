@@ -25,3 +25,15 @@ def test_no_text_is_dropped():
     assert chunks
     for chunk in chunks:
         assert chunk.strip() == chunk and chunk
+
+
+def test_cuts_at_question_and_exclamation_marks():
+    text = "a" * 40 + "? " + "b" * 40 + "! " + "c" * 40 + ". " + "d" * 40
+    chunks = chunk_text(text, chunk_size=60, overlap=10)
+    assert chunks[0].endswith("?")
+    assert any(chunk.endswith("!") for chunk in chunks)
+
+
+def test_large_overlap_still_terminates():
+    chunks = chunk_text("abcdefghij" * 20, chunk_size=10, overlap=9)
+    assert 0 < len(chunks) < 1000

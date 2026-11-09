@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from loader import load_text, load_folder
+import pytest
+
+from loader import load_folder, load_text
 
 
 def test_load_text_without_markers_is_single_page(tmp_path: Path):
@@ -23,8 +25,20 @@ def test_load_text_with_markers_and_front_matter(tmp_path: Path):
 
 
 def test_load_folder_rejects_missing_folder(tmp_path: Path):
-    try:
+    with pytest.raises(FileNotFoundError):
         load_folder(str(tmp_path / "nope"))
-        assert False, "expected FileNotFoundError"
-    except FileNotFoundError:
-        pass
+
+
+def test_load_text_falls_back_to_cp1252(tmp_path: Path):
+    f = tmp_path / "legacy.txt"
+    f.write_bytes(b"caf\xe9 au lait")
+    records = load_text(f)
+    assert records[0]["text"] == "café au lait"
+
+
+def test_load_text_rejects_undecodable_bytes(tmp_path: Path):
+    f = tmp_path / "binary.txt"
+    f.write_bytes(b"\x81\x8d\x90\x9d")
+    with pytest.raises(RuntimeError) as exc:
+        load_text(f)
+    assert "not valid UTF-8 or cp1252" in str(exc.value)

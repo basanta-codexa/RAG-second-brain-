@@ -7,8 +7,8 @@ Usage:
 import argparse
 import sys
 
-from loader import load_folder
 from chunker import chunk_records
+from loader import load_folder
 
 
 def main() -> int:
