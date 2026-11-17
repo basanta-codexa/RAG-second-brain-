@@ -2,7 +2,8 @@
 # Tested with the versions pinned here (see README for exact setup).
 pypdf==6.21.4
 pymupdf==2.0
-numpy==2.5.4
+numpy==2.5.4; python_version >= "3.12"
+numpy==2.4.0; python_version < "3.12"
 sentence-transformers==6.2.0
 torch==2.15.0
 transformers==5.22.1
