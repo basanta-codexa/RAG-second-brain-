@@ -77,9 +77,14 @@ def _single_page_sources(index: dict) -> set[str]:
 def evaluate(folder: str, top_k: int, model_name: str,
              chunk_size: int, overlap: int, rebuild: bool,
              hybrid: bool = False, rerank: bool = False,
-             fail_under: float = 0.0) -> int:
+             hybrid_rerank: bool = False,
+             fail_under: float = 0.0,
+             reranker_model: str | None = None) -> int:
     validate_tests(TESTS)
-    index = srch.create_index(folder, model_name, chunk_size, overlap, rebuild)
+    if hybrid_rerank:
+        hybrid = rerank = True
+    index = srch.create_index(folder, model_name, chunk_size, overlap, rebuild,
+                              reranker_model=reranker_model)
     if index["errors"]:
         for err in index["errors"]:
             print(f"INDEX ERROR: {err['file']}: {err['error']}")
@@ -149,8 +154,13 @@ def evaluate(folder: str, top_k: int, model_name: str,
         for rank, r in enumerate(results, 1):
             print(f"  #{rank} {r['score']:.3f} [{r['source']} | p{r['page']}] {r['text'][:150]}...")
 
-    if fail_under and overall["hitk_rate"] < fail_under:
-        print(f"\nFAIL: hit@{top_k} {overall['hitk_rate']:.3f} is below --fail-under {fail_under:.3f}")
+    # Gate on the strict subset when it exists; the lenient-inclusive overall
+    # rate can pass while page-specific retrieval is failing.
+    gate = strict if strict["n"] else overall
+    scope = "strict" if strict["n"] else "overall"
+    if fail_under and gate["hitk_rate"] < fail_under:
+        print(f"\nFAIL: {scope} hit@{top_k} {gate['hitk_rate']:.3f} "
+              f"is below --fail-under {fail_under:.3f}")
         return 1
     return 0
 
@@ -165,16 +175,22 @@ def main() -> int:
     parser.add_argument("--rebuild", action="store_true",
                         help="drop the collection and re-embed everything")
     parser.add_argument("--hybrid", action="store_true",
-                        help="enable BM25+vector fusion (measured regression on this corpus — see README)")
+                        help="enable BM25+vector fusion (RRF)")
     parser.add_argument("--rerank", action="store_true",
                         help="re-rank top candidates with a cross-encoder")
+    parser.add_argument("--hybrid-rerank", action="store_true",
+                        help="fuse BM25+vector first, then re-rank the fused pool")
+    parser.add_argument("--reranker", default=None,
+                        help=f"cross-encoder model id (default: {srch.RERANK_MODEL})")
     parser.add_argument("--fail-under", type=float, default=0.0,
-                        help="exit 1 when hit@k is below this rate (0 disables)")
+                        help="exit 1 when hit@k is below this rate "
+                             "(strict subset when available; 0 disables)")
     args = parser.parse_args()
     try:
         return evaluate(args.folder, args.k, args.model, args.chunk_size, args.overlap,
                         args.rebuild, hybrid=args.hybrid, rerank=args.rerank,
-                        fail_under=args.fail_under)
+                        hybrid_rerank=args.hybrid_rerank, fail_under=args.fail_under,
+                        reranker_model=args.reranker)
     except (RuntimeError, ValueError, FileNotFoundError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
