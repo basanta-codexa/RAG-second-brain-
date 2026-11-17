@@ -51,14 +51,100 @@ def load_encoder(model_name: str) -> SentenceTransformer:
     return SentenceTransformer(model_name)
 
 
-def load_reranker() -> CrossEncoder:
+def load_reranker(model_name: str | None = None) -> CrossEncoder:
     from sentence_transformers import CrossEncoder
 
-    return CrossEncoder(RERANK_MODEL)
+    return CrossEncoder(model_name or RERANK_MODEL)
 
 
 def _tokenize(text: str) -> list[str]:
     return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def _matches_source(row: dict, source: str | None) -> bool:
+    """Mirror Store._source_filter: accept an origin or a bare filename."""
+    return not source or row.get("source") == source or row.get("origin") == source
+
+
+def _build_hybrid_view(rows: list[dict]) -> dict:
+    """Precompute the BM25 index and vector matrix for a fixed set of rows.
+
+    Built once per index sync (or once per query for indexes that predate the
+    cache) so a query no longer drags the whole corpus over HTTP. The cache is
+    owned by the index dict, which the web app already keeps per process.
+    """
+    matrix = np.asarray([r["vector"] for r in rows], dtype=np.float32)
+    public = [{k: v for k, v in r.items() if k != "vector"} for r in rows]
+    bm25 = BM25Okapi([_tokenize(r["text"]) for r in public])
+    return {"rows": public, "matrix": matrix, "bm25": bm25, "by_source": {}}
+
+
+def _subset_view(view: dict, indices: list[int]) -> dict | None:
+    """Rebuild a view over a subset, so source filters keep exact BM25 IDF."""
+    if not indices:
+        return None
+    rows = [view["rows"][i] for i in indices]
+    return {
+        "rows": rows,
+        "matrix": view["matrix"][indices],
+        "bm25": BM25Okapi([_tokenize(r["text"]) for r in rows]),
+        "by_source": {},
+    }
+
+
+def _hybrid_view(index: dict, source: str | None = None) -> dict | None:
+    """Return a cached hybrid view, scoped to *source* when requested."""
+    view = index.get("hybrid_cache")
+    if view is None:
+        # Always build the global view first. Filtering inside the scroll would
+        # cache a single source as if it were the whole corpus and silently
+        # poison every later unfiltered query.
+        rows = index["store"].scroll_all(with_vectors=True)
+        if not rows or any("vector" not in r for r in rows):
+            return None
+        view = _build_hybrid_view(rows)
+        index["hybrid_cache"] = view  # self-cache for callers that skip create_index
+    if not source:
+        return view
+    by_source = view.setdefault("by_source", {})
+    if source not in by_source:
+        indices = [i for i, r in enumerate(view["rows"]) if _matches_source(r, source)]
+        by_source[source] = _subset_view(view, indices)
+    return by_source[source]
+
+
+def _hybrid_candidates(index: dict, q_vec: np.ndarray, question: str,
+                       limit: int, source: str | None = None) -> list[dict]:
+    """RRF-fuse vector and BM25 scores over the cached corpus view."""
+    view = _hybrid_view(index, source)
+    if view is None:
+        return []
+    rows = view["rows"]
+    vector_scores = view["matrix"] @ q_vec
+    bm25_scores = np.asarray(view["bm25"].get_scores(_tokenize(question)), dtype=float)
+    order = _rrf_order(vector_scores, bm25_scores)[: min(limit, len(rows))]
+    return [
+        {**rows[i], "score": float(vector_scores[i]), "bm25_score": float(bm25_scores[i])}
+        for i in order
+    ]
+
+
+def _rerank_candidates(index: dict, question: str, pool: list[dict], top_k: int) -> list[dict]:
+    """Cross-encoder reorder of an already-retrieved candidate pool."""
+    if not pool:
+        return []
+    reranker_model = index.get("reranker_model") or RERANK_MODEL
+    reranker = index.get("reranker")
+    if reranker is None:
+        reranker = load_reranker(reranker_model)
+        index["reranker"] = reranker
+    try:
+        scores = np.asarray(
+            reranker.predict([(question, h["text"]) for h in pool]), dtype=float)
+    except Exception as exc:
+        raise RuntimeError(f"reranker unavailable ({reranker_model}): {exc}") from exc
+    order = np.argsort(-scores, kind="stable")[: min(top_k, len(pool))]
+    return [{**pool[j], "rerank_score": float(scores[j])} for j in order]
 
 
 def _write_progress(**fields) -> None:
@@ -177,7 +263,8 @@ def _embed_files(store: Store, files: list[tuple[str, Path]], model_name: str,
 def create_index(folder: str | list[str] = "data", model_name: str = DEFAULT_MODEL,
                  chunk_size: int = DEFAULT_CHUNK_SIZE, overlap: int = DEFAULT_OVERLAP,
                  rebuild: bool = False,
-                 encoder: SentenceTransformer | None = None) -> dict:
+                 encoder: SentenceTransformer | None = None,
+                 reranker_model: str | None = None) -> dict:
     """Sync the Qdrant collection with the current corpus files.
 
     ``folder`` may be one folder or a list; all supported files are merged.
@@ -236,7 +323,14 @@ def create_index(folder: str | list[str] = "data", model_name: str = DEFAULT_MOD
                 new_state["files"][key] = state["files"][key]
     store.save_state(new_state)
 
-    chunks = store.scroll_all(with_vectors=False) if store.exists() else []
+    # One scroll per sync builds both the public chunk list and the reusable
+    # hybrid view. Queries then score in-process instead of re-fetching every
+    # vector and payload over HTTP.
+    rows = store.scroll_all(with_vectors=True) if store.exists() else []
+    chunks = [{k: v for k, v in row.items() if k != "vector"} for row in rows]
+    hybrid_cache = (
+        _build_hybrid_view(rows) if rows and all("vector" in r for r in rows) else None
+    )
     reused = max(0, len(chunks) - sum(len(v["point_ids"]) for v in updates.values()))
     print(f"collection {store.collection}: {store.count()} points "
           f"({len(updates)} file(s) re-embedded, {reused} chunk(s) reused)")
@@ -246,7 +340,9 @@ def create_index(folder: str | list[str] = "data", model_name: str = DEFAULT_MOD
 
     return {
         "model_name": model_name,
+        "reranker_model": reranker_model or RERANK_MODEL,
         "chunks": chunks,
+        "hybrid_cache": hybrid_cache,
         "encoder": encoder_used,
         "store": store,
         "errors": errors,
@@ -295,36 +391,17 @@ def query_index(index: dict, encoder: SentenceTransformer, question: str,
     k = min(top_k, total)
 
     if hybrid:
-        rows = store.scroll_all(with_vectors=True, source=source)
-        if not rows:
-            return []
-        bm25 = BM25Okapi([_tokenize(r["text"]) for r in rows])
-        vectors = np.array([r["vector"] for r in rows], dtype=np.float32)
-        vector_scores = vectors @ q_vec
-        bm25_scores = np.array(bm25.get_scores(_tokenize(question)))
-        order = _rrf_order(vector_scores, bm25_scores)[:k]
-        return [
-            {**{key: val for key, val in rows[i].items() if key != "vector"},
-             "score": float(vector_scores[i]),
-             "bm25_score": float(bm25_scores[i])}
-            for i in order
-        ]
+        # A combined query needs a wider fusion pool for the cross-encoder to
+        # reorder; hybrid-only can stop at k directly.
+        pool = _hybrid_candidates(index, q_vec, question,
+                                  RERANK_POOL if rerank else k, source)
+        if rerank:
+            return _rerank_candidates(index, question, pool, k)
+        return pool
 
     if rerank:
         pool = store.search(q_vec, limit=min(RERANK_POOL, total), source=source)
-        if not pool:
-            return []
-        reranker = index.get("reranker")
-        if reranker is None:
-            reranker = load_reranker()
-            index["reranker"] = reranker
-        try:
-            r_scores = np.asarray(
-                reranker.predict([(question, h["text"]) for h in pool]), dtype=float)
-        except Exception as exc:
-            raise RuntimeError(f"reranker unavailable ({RERANK_MODEL}): {exc}") from exc
-        order = np.argsort(-r_scores, kind="stable")[:k]
-        return [{**pool[j], "rerank_score": float(r_scores[j])} for j in order]
+        return _rerank_candidates(index, question, pool, k)
 
     return store.search(q_vec, limit=k, source=source)
 
@@ -352,14 +429,17 @@ def main() -> int:
                         help="disable the BGE instruction prefix")
     parser.add_argument("--hybrid", action="store_true", help="BM25+vector RRF fusion")
     parser.add_argument("--rerank", action="store_true",
-                        help=f"re-rank with cross-encoder ({RERANK_MODEL})")
+                        help="re-rank with a cross-encoder")
+    parser.add_argument("--reranker", default=None,
+                        help=f"cross-encoder model id for reranking (default: {RERANK_MODEL})")
     parser.add_argument("--question", help="ask one question and exit")
     parser.add_argument("--source", help="restrict retrieval to one origin or filename (e.g. data/notes.md)")
     args = parser.parse_args()
 
     try:
         index = create_index(args.folder, args.model,
-                             args.chunk_size, args.overlap, args.rebuild)
+                             args.chunk_size, args.overlap, args.rebuild,
+                             reranker_model=args.reranker)
         encoder = index["encoder"] or load_encoder(args.model)
         use_prefix = False if args.no_query_prefix else None
 

@@ -108,6 +108,16 @@ def test_first_index_embeds_and_creates(tmp_path: Path):
     assert FakeStore.state["files"]["data/a.md"]["sha256"]
 
 
+def test_index_exposes_hybrid_cache_even_when_store_has_no_vectors(tmp_path: Path):
+    data = tmp_path / "data"
+    write(data / "a.md", "alpha beta gamma. " * 20)
+    index = run(data)
+    assert "hybrid_cache" in index
+    # The fake store cannot supply vectors, so the cache degrades to None and
+    # query_index falls back to a one-time scroll instead of crashing.
+    assert index["hybrid_cache"] is None
+
+
 def test_unchanged_corpus_does_not_reembed(tmp_path: Path):
     data = tmp_path / "data"
     write(data / "a.md", "alpha beta gamma. " * 20)
