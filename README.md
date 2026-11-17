@@ -1,32 +1,68 @@
 # Second Brain
 
-<p>
-  <img alt="Python 3.11+" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white">
-  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-local-009688?logo=fastapi&logoColor=white">
-  <img alt="Qdrant" src="https://img.shields.io/badge/Qdrant-vector%20store-DC244C?logo=qdrant&logoColor=white">
-  <img alt="pytest" src="https://img.shields.io/badge/tests-pytest-0A9EDC?logo=pytest&logoColor=white">
-</p>
+Local retrieval over personal documents. Index PDFs, Markdown, and text into
+Qdrant, search them from a CLI or browser, and optionally generate answers that
+cite the passages they used. A separate script transcribes handwritten PDFs
+through Gemini before indexing.
 
-A local retrieval-augmented generation (RAG) tool for personal documents. It
-indexes PDFs, Markdown, and text files in Qdrant, retrieves relevant passages,
-and can generate cited answers with Groq. An optional Gemini script transcribes
-handwritten PDFs first.
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-89%20passing-0A9EDC?logo=pytest&logoColor=white)](tests/)
 
-> Documents, chunks, and index state stay on this machine. Network calls happen
-> only for optional OCR and generated answers.
+## Quick start
 
-## At a glance
+Requires Python 3.11+ and Docker.
 
-| Area | Implementation |
-| --- | --- |
-| Interface | CLI and local FastAPI web UI |
-| Storage | Qdrant vector database |
-| Embeddings | `sentence-transformers`, `BAAI/bge-base-en-v1.5` by default |
-| Retrieval | Vector search, BM25 hybrid, cross-encoder reranking |
-| Answers | Optional Groq generation with citation checks |
-| OCR | Optional Gemini transcription for scanned PDFs |
+```powershell
+docker compose up -d
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m pip install -r requirements-test.txt
+python -m pip install -e . --no-deps
+copy .env.example .env
+python -m uvicorn app.main:app --reload
+```
 
-## Architecture
+Open `http://127.0.0.1:8000` and upload a `.pdf`, `.md`, or `.txt` file. The app
+accepts files up to 25 MB. Qdrant starts with telemetry disabled; see
+[Privacy](#privacy-and-security) for the other network calls.
+
+Command line:
+
+```powershell
+python search.py --question "How does the cache fallback work?"
+python search.py --rebuild
+python evaluate.py --k 3
+```
+
+## Interface
+
+The workbench shows the corpus and the question form. Search returns ranked
+passages with source and page. No answer is generated unless the consent switch
+is enabled.
+
+![Workbench: upload panel and question form](docs/screenshots/01-workbench.png)
+
+Advanced options expose the four retrieval modes described below.
+
+![Advanced retrieval options](docs/screenshots/02-retrieval-modes.png)
+
+Ranked passages for a question about the CAP theorem.
+
+![Search results](docs/screenshots/03-search-results.png)
+
+The same view in dark mode.
+
+![Dark mode](docs/screenshots/04-dark-mode.png)
+
+## How it works
+
+Documents are loaded as page records, split into overlapping sentence-aware
+chunks, embedded with `BAAI/bge-base-en-v1.5`, and written to Qdrant. Each file
+is hashed; only new or changed files are re-embedded. Deletions of old point IDs
+happen after replacements are in place, and the state file is written
+atomically.
 
 ```mermaid
 flowchart LR
@@ -34,101 +70,38 @@ flowchart LR
     B --> C[chunker.py]
     C --> D[search.py<br/>embed changed files]
     D --> E[(Qdrant)]
-
     Q[Question] --> R[search.py<br/>embed query]
     R --> E
     E --> S[Ranked passages]
     S --> T[CLI]
     S --> U[FastAPI + web UI]
     U -. opt-in .-> V[Groq answer]
-
     A -. optional OCR .-> W[transcribe.py + Gemini]
     W --> A
 ```
 
-Indexing is incremental. Each file is content-hashed, only new or changed files
-are embedded, and stale point IDs are removed after replacements are written.
+Details are in [docs/architecture.md](docs/architecture.md).
 
-## Requirements
-
-- Python 3.11+
-- Docker, for Qdrant
-- Optional: `GROQ_API_KEY` for generated answers
-- Optional: `GEMINI_API_KEY` for PDF transcription
-
-## Setup
-
-Start Qdrant:
-
-```powershell
-docker run -d --name second-brain-qdrant --restart unless-stopped `
-  -p 6333:6333 -p 6334:6334 `
-  -v "${env:USERPROFILE}\.qdrant\storage:/qdrant/storage" qdrant/qdrant
-```
-
-If the container already exists:
-
-```powershell
-docker start second-brain-qdrant
-```
-
-Create the environment and install dependencies:
-
-```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-python -m pip install -r requirements-test.txt
-copy .env.example .env
-```
-
-Fill in the keys you need in `.env`. The web app and `transcribe.py` load that
-file automatically.
-
-## Usage
-
-Search the corpus:
-
-```powershell
-python search.py
-python search.py --question "How does the cache fallback work?"
-python search.py --rebuild
-```
-
-Inspect chunks:
-
-```powershell
-python chunker.py
-python inspect_chunks.py find "cap theorem"
-```
-
-Transcribe a handwritten PDF:
-
-```powershell
-python transcribe.py --pdf system-design-notes.pdf
-```
-
-The transcription is resumable. Pages are cached under `transcripts/`.
-
-Run the web app:
-
-```powershell
-python -m uvicorn app.main:app --reload
-```
-
-Open `http://127.0.0.1:8000`. The app accepts `.pdf`, `.md`, and `.txt` uploads
-up to 25 MB by default. The index updates on the next query.
-
-### Retrieval modes
+## Retrieval modes
 
 | Mode | Behavior |
 | --- | --- |
-| `vector` | Dense cosine search; default |
-| `hybrid` | BM25 plus vector results merged with reciprocal rank fusion |
-| `rerank` | Cross-encoder reranking of vector candidates |
+| `vector` | Dense cosine search in Qdrant. Default. |
+| `hybrid` | BM25 and vector scores fused by reciprocal rank fusion. |
+| `rerank` | Cross-encoder reranking of the vector top 20. |
+| `hybrid+rerank` | Fusion first, then cross-encoder reranking of the fused pool. |
 
-Source filters accept an origin such as `data/notes.md` or a filename such as
-`notes.pdf`.
+The default is `vector`. On the 45-case test set it scored 19/22 on strict hit@1
+and answered in 47 ms; `hybrid+rerank` scored 15/22 at roughly 1.1 s. The full
+comparison, including two reranker models, is in
+[docs/retrieval-evaluation.md](docs/retrieval-evaluation.md).
+
+Hybrid modes score against a BM25 index and vector matrix built once per index
+sync, so queries do not pull the whole corpus over HTTP. Scoring is still
+O(corpus) per query: about 1.5 ms for 3,000 chunks at 768 dimensions.
+
+Source filters take either an origin (`data/notes.md`) or a filename
+(`notes.pdf`).
 
 ## Evaluation
 
@@ -136,76 +109,70 @@ Source filters accept an origin such as `data/notes.md` or a filename such as
 python evaluate.py --k 3
 python evaluate.py --k 3 --hybrid
 python evaluate.py --k 3 --rerank
+python evaluate.py --k 3 --hybrid-rerank
 python evaluate.py --k 3 --fail-under 0.8
 ```
 
-| Metric | Meaning |
-| --- | --- |
-| `hit@1` | Expected source/page ranked first |
-| `hit@k` | Expected source/page present in the top *k* |
-| `MRR` | Mean reciprocal rank of the first correct result |
+`--fail-under` checks the strict subset when one exists. Strict cases require
+the correct page in a multi-page source; lenient cases accept any page from the
+source or come from a single-page source.
 
-Results are split into strict and lenient subsets. Strict tests require the
-correct page in a multi-page source; lenient tests accept any page or come from
-a single-page source. `--fail-under` exits non-zero for CI.
+| Metric | Definition |
+| --- | --- |
+| `hit@1` | Correct source and page ranked first. |
+| `hit@k` | Correct source and page in the top *k*. |
+| `MRR` | Mean reciprocal rank of the first correct result. |
+
+Cases whose source file is missing are skipped and printed, not counted as
+passes.
 
 ## Configuration
 
+Read from the environment or a `.env` file in the project root.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `SECOND_BRAIN_DATA` | `data` | Base corpus directory |
-| `SECOND_BRAIN_UPLOADS` | `uploads` | Web upload directory |
+| `SECOND_BRAIN_DATA` | `data` | Corpus directory |
+| `SECOND_BRAIN_UPLOADS` | `uploads` | Upload directory |
 | `SECOND_BRAIN_MODEL` | `BAAI/bge-base-en-v1.5` | Embedding model |
-| `SECOND_BRAIN_MAX_MB` | `25` | Maximum upload size |
-| `SECOND_BRAIN_CHUNK_SIZE` | `800` | Chunk size in characters |
-| `SECOND_BRAIN_OVERLAP` | `150` | Chunk overlap in characters |
-| `SECOND_BRAIN_QDRANT` | `http://127.0.0.1:6333` | Qdrant URL |
+| `SECOND_BRAIN_RERANKER` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Reranker model |
+| `SECOND_BRAIN_CHUNK_SIZE` | `800` | Chunk size, characters |
+| `SECOND_BRAIN_OVERLAP` | `150` | Chunk overlap, characters |
+| `SECOND_BRAIN_MAX_MB` | `25` | Upload limit |
+| `SECOND_BRAIN_QDRANT` | `http://127.0.0.1:6333` | Qdrant endpoint |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Answer model |
 
-## Project structure
-
-```text
-.
-├── app/                 FastAPI service and browser UI
-├── tests/               pytest suite
-├── data/                base corpus (gitignored)
-├── uploads/             web uploads (gitignored)
-├── transcripts/         OCR page cache (gitignored)
-├── loader.py            PDF/Markdown/text -> page records
-├── chunker.py           page records -> sentence-aware chunks
-├── qdrant_store.py      collection lifecycle, filters, and index state
-├── search.py            embedding, retrieval, hybrid search, reranking
-├── evaluate.py          hit@1 / hit@k / MRR
-├── transcribe.py        handwritten PDF -> Markdown
-└── testset.py           retrieval test cases
-```
-
-Qdrant state is stored in `.cache/qdrant_state.json`. A change to the embedding
-model, chunk configuration, or collection layout triggers a full rebuild.
+Changing the embedding model, chunk size, or overlap invalidates the index and
+triggers a full rebuild.
 
 ## Web API
 
+Interactive documentation is served at `/docs` while the app is running.
+
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/status` | Corpus, sources, model, and upload limit |
-| `GET` | `/api/index-status` | Live indexing progress |
+| `GET` | `/api/status` | Corpus, sources, model, upload limit |
+| `GET` | `/api/index-status` | Indexing progress |
 | `POST` | `/api/upload` | Upload one document |
-| `DELETE` | `/api/uploads/<name>` | Remove one upload |
+| `DELETE` | `/api/uploads/{name}` | Remove one upload |
 | `POST` | `/api/uploads/clear` | Remove all uploads |
 | `POST` | `/api/search` | Retrieve passages |
-| `POST` | `/api/answer` | Generate an answer; requires session consent |
+| `POST` | `/api/answer` | Generate an answer (requires consent) |
 
 ## Privacy and security
 
-Documents stay local. The two exceptions are explicit:
+Documents, chunks, and index state stay on this machine. Three exceptions:
 
-- `transcribe.py` sends page images to Google Gemini.
-- Generated answers send retrieved passages to Groq after you enable AI answers
-  for the session.
+- The first run downloads the embedding model, and rerank modes download a
+  cross-encoder, from Hugging Face.
+- `transcribe.py` sends rendered page images to Gemini when OCR is used.
+- `/api/answer` sends retrieved passages to Groq after the UI's consent switch
+  is enabled.
 
-The web app has no authentication and is intended for local use only. Do not
-expose it to a network. Generated answers are not verified for factual
-correctness; treat them as drafts.
+`docker-compose.yml` sets `QDRANT__TELEMETRY_DISABLED=true`. The web app has no
+authentication and binds to localhost; do not expose it to a network. Generated
+answers are not factually verified, and citation checks only catch reference
+numbers that were not sent to the model.
 
 ## Tests
 
@@ -214,18 +181,41 @@ python -m pytest
 python -m ruff check .
 ```
 
-The test suite uses an in-memory Qdrant client and a fake encoder, so it does
-not need Docker or a downloaded model.
+Tests use in-memory Qdrant and fake encoders, so they need neither Docker nor
+downloaded models. Development conventions are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Project layout
+
+```text
+app/          FastAPI service, UI, answer generation
+tests/        pytest suite
+docs/         architecture and evaluation results
+data/         corpus (gitignored)
+uploads/      web uploads (gitignored)
+transcripts/  OCR page cache (gitignored)
+loader.py     documents -> page records
+chunker.py    page records -> chunks
+qdrant_store.py  collection lifecycle, index plan, state
+search.py     embedding, retrieval, CLI
+evaluate.py   retrieval metrics
+transcribe.py  handwritten PDF -> Markdown
+testset.py    retrieval test cases
+```
+
+`pip install -e .` adds `second-brain-search` and `second-brain-evaluate`.
 
 ## Limitations
 
-- PDF extraction quality depends on the source layout. Tables, math, and scans
-  may need OCR or manual cleanup.
-- The web app caches the index by file size and modification time. After
-  restoring files with preserved timestamps, restart the server or run
-  `python search.py --rebuild`.
-- If Qdrant storage is removed while the web app is running, restart the app so
-  its index cache notices the missing collection.
-- Markdown page numbers require `<<<PAGE n>>>` markers. Without them, the file
-  is treated as page 1 for evaluation.
-- No license is provided.
+- PDF text extraction varies with layout; tables, equations, and scans may need
+  OCR or manual cleanup.
+- The web index cache keys on file size and mtime. Restoring files with
+  preserved timestamps needs a rebuild.
+- Removing Qdrant storage while the app runs requires an app restart.
+- Markdown page numbers require `<<<PAGE n>>>` markers; without them the file is
+  treated as page 1.
+- Only 26 of 39 source pages were transcribed. The evaluation document covers
+  every page referenced by the test set.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
