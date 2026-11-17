@@ -17,10 +17,11 @@ import sys
 import time
 from pathlib import Path
 
-import pymupdf as fitz  # PyMuPDF
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+
+# PyMuPDF and the Gemini SDK are imported inside main()/transcribe_page().
+# Keeping them lazy lets the pure cache/retry helpers be unit-tested without
+# installing the heavyweight OCR dependencies.
 
 DEFAULT_PDF = "system-design-notes.pdf"
 DEFAULT_OUT = "data/system-design-notes.md"
@@ -114,6 +115,13 @@ def cached_pages(cache_dir: Path, total: int) -> tuple[dict[int, str], list[int]
     return done, missing
 
 
+def _image_part(png: bytes):
+    """Build a Gemini image part. Isolated so retry tests need no Gemini SDK."""
+    from google.genai import types
+
+    return types.Part.from_bytes(data=png, mime_type="image/png")
+
+
 def transcribe_page(client, model: str, png: bytes, max_retries: int) -> str:
     """Call the model once, retrying transient failures; raise on permanent failure."""
     last_error: Exception | None = None
@@ -121,10 +129,7 @@ def transcribe_page(client, model: str, png: bytes, max_retries: int) -> str:
         try:
             resp = client.models.generate_content(
                 model=model,
-                contents=[
-                    types.Part.from_bytes(data=png, mime_type="image/png"),
-                    PROMPT,
-                ],
+                contents=[_image_part(png), PROMPT],
             )
             text = (resp.text or "").strip()
             if not text:
@@ -148,6 +153,9 @@ def transcribe_page(client, model: str, png: bytes, max_retries: int) -> str:
 
 
 def main() -> int:
+    import pymupdf as fitz  # PyMuPDF
+    from google import genai
+
     parser = argparse.ArgumentParser(description="Transcribe a handwritten-notes PDF to Markdown.")
     parser.add_argument("--pdf", default=DEFAULT_PDF, help=f"input PDF (default: {DEFAULT_PDF})")
     parser.add_argument("--out", default=DEFAULT_OUT, help=f"output markdown (default: {DEFAULT_OUT})")
