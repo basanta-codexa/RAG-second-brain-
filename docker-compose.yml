@@ -1,0 +1,17 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: second-brain-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    environment:
+      # Qdrant collects anonymous usage statistics by default. The privacy
+      # claim in README.md assumes this is disabled.
+      QDRANT__TELEMETRY_DISABLED: "true"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+volumes:
+  qdrant_storage:
