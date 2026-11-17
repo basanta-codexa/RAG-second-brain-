@@ -59,6 +59,27 @@ def test_sanitize_filename_rejects_only_dots():
         sanitize_filename("....")
 
 
+def test_reranker_model_is_configurable(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SECOND_BRAIN_RERANKER", "env/reranker")
+    app = create_app(data_dir=str(tmp_path / "data"), upload_dir=str(tmp_path / "uploads"))
+    assert app.state.reranker_model == "env/reranker"
+
+    app = create_app(data_dir=str(tmp_path / "data2"), upload_dir=str(tmp_path / "uploads2"),
+                     reranker_model="explicit/reranker")
+    assert app.state.reranker_model == "explicit/reranker"
+
+
+def test_openapi_docs_are_served(client):
+    assert client.get("/docs").status_code == 200
+    assert client.get("/openapi.json").status_code == 200
+
+
+def test_responses_carry_timing_header(client):
+    res = client.get("/api/status")
+    assert res.status_code == 200
+    assert "x-response-time-ms" in res.headers
+
+
 def test_status_with_empty_corpus_is_zero(client):
     s = client.get("/api/status").json()
     assert s["documents"] == 0
@@ -112,9 +133,45 @@ def test_search_accepts_real_world_source_names(client):
     assert res.status_code == 409  # corpus empty, not a 422 validation error
 
 
+def test_blank_question_is_a_validation_error(client):
+    res = client.post("/api/search", json={"question": "   "})
+    assert res.status_code == 422
+
+
+def test_clear_uploads_skips_in_flight_temp_files(client):
+    temp = Path(client.app.state.upload_dir) / ".upload-1234"
+    temp.write_bytes(b"partial upload")
+    res = client.post("/api/uploads/clear")
+    assert res.status_code == 200
+    assert temp.exists()  # an in-flight upload must not be deleted underneath itself
+    temp.unlink()
+
+
 def test_search_on_empty_corpus_returns_409(client):
     res = client.post("/api/search", json={"question": "anything at all", "top_k": 3})
     assert res.status_code == 409
+
+
+def test_combined_mode_routes_to_both_stages(monkeypatch, client):
+    client.post("/api/upload", files={"file": ("notes.txt", b"alpha beta gamma", "text/plain")})
+    seen = {}
+
+    def fake_query(index, encoder, question, **kwargs):
+        seen.update(kwargs)
+        return _fake_hits()
+
+    monkeypatch.setattr("app.main.srch.create_index", lambda *a, **kw: _fake_index())
+    monkeypatch.setattr("app.main.srch.query_index", fake_query)
+
+    res = client.post("/api/search", json={"question": "alpha beta", "mode": "hybrid+rerank"})
+    assert res.status_code == 200
+    assert seen["hybrid"] is True
+    assert seen["rerank"] is True
+
+
+def test_unknown_mode_is_rejected(client):
+    res = client.post("/api/search", json={"question": "anything at all", "mode": "magic"})
+    assert res.status_code == 422
 
 
 def test_delete_missing_upload_returns_404(client):

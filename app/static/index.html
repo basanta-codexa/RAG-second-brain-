@@ -121,11 +121,12 @@
 
             <details class="advanced" id="advanced-panel">
               <summary>Advanced retrieval</summary>
-              <p class="advanced-note">Vector retrieval is the measured best on this corpus. The other two are available to inspect — switch, search, compare.</p>
+              <p class="advanced-note">Compare retrieval strategies. The full 45-case measurement is in docs/retrieval-evaluation.md; vector remains the default.</p>
               <fieldset class="retrieval-mode">
-                <label class="mode-option"><input type="radio" name="mode" value="vector" checked /><span>Vector<small>dense cosine, default</small></span></label>
+                <label class="mode-option"><input type="radio" name="mode" value="vector" checked /><span>Vector<small>dense cosine, current default</small></span></label>
                 <label class="mode-option"><input type="radio" name="mode" value="hybrid" /><span>Hybrid<small>BM25 + vector, reciprocal-rank fusion</small></span></label>
                 <label class="mode-option"><input type="radio" name="mode" value="rerank" /><span>Re-rank<small>cross-encoder over the top 20</small></span></label>
+                <label class="mode-option"><input type="radio" name="mode" value="hybrid+rerank" /><span>Hybrid + Rerank<small>fusion, then cross-encoder over the fused pool</small></span></label>
               </fieldset>
             </details>
           </div>

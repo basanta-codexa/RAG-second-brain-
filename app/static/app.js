@@ -502,7 +502,7 @@ async function handleCopy(which) {
 el.copyAnswer.addEventListener('click', () => handleCopy('answer'));
 el.copyCitations.addEventListener('click', () => handleCopy('citations'));
 
-const CITATION_RE = /\[(\d{1,2})\]/g;
+const CITATION_RE = /\[(\d{1,3})\]/g;
 
 function buildAnswerFragment(text) {
   const fragment = document.createDocumentFragment();

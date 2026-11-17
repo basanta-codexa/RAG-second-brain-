@@ -13,29 +13,37 @@ Configuration (environment variables):
     SECOND_BRAIN_DATA     base corpus folder (default: data)
     SECOND_BRAIN_UPLOADS  upload folder      (default: uploads)
     SECOND_BRAIN_MODEL    embedding model    (default: BAAI/bge-base-en-v1.5)
+    SECOND_BRAIN_RERANKER cross-encoder model for rerank modes
     SECOND_BRAIN_MAX_MB   max upload size    (default: 25 MB)
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Literal
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 import search as srch
 from app import generate
 from loader import SUPPORTED_SUFFIXES
 from qdrant_store import StoreUnavailable
 
+logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+# Loaded explicitly here rather than relying on app.generate's import side
+# effect, so every SECOND_BRAIN_* setting is available when create_app() runs.
+load_dotenv(STATIC_DIR.parent.parent / ".env")
 ALLOWED_EXTENSIONS = frozenset(SUPPORTED_SUFFIXES)
 _RESERVED_WINDOWS_NAMES = {
     "CON", "PRN", "AUX", "NUL",
@@ -44,7 +52,7 @@ _RESERVED_WINDOWS_NAMES = {
 }
 
 
-Mode = Literal["vector", "hybrid", "rerank"]
+Mode = Literal["vector", "hybrid", "rerank", "hybrid+rerank"]
 
 
 class SearchRequest(BaseModel):
@@ -54,6 +62,14 @@ class SearchRequest(BaseModel):
     # Origin ("data/notes.md") or filename ("notes.md"). Validated against the
     # corpus at query time rather than with a regex that rejects real names.
     source: str | None = Field(default=None, max_length=300)
+
+    @field_validator("question")
+    @classmethod
+    def _non_blank_question(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 3:
+            raise ValueError("question must be at least 3 non-whitespace characters")
+        return value
 
 
 class AnswerRequest(SearchRequest):
@@ -103,10 +119,12 @@ def file_info(path: Path, origin: str) -> dict:
 
 def create_app(data_dir: str | None = None, upload_dir: str | None = None,
                model_name: str | None = None, max_mb: int | None = None,
-               chunk_size: int | None = None, overlap: int | None = None) -> FastAPI:
+               chunk_size: int | None = None, overlap: int | None = None,
+               reranker_model: str | None = None) -> FastAPI:
     data_path = Path(data_dir or os.getenv("SECOND_BRAIN_DATA", "data"))
     upload_path = Path(upload_dir or os.getenv("SECOND_BRAIN_UPLOADS", "uploads"))
     model = model_name or os.getenv("SECOND_BRAIN_MODEL", srch.DEFAULT_MODEL)
+    reranker = reranker_model or os.getenv("SECOND_BRAIN_RERANKER") or srch.RERANK_MODEL
     max_bytes = (int(max_mb or os.getenv("SECOND_BRAIN_MAX_MB", "25")) * 1024 * 1024)
     chunk_size = int(chunk_size or os.getenv("SECOND_BRAIN_CHUNK_SIZE", srch.DEFAULT_CHUNK_SIZE))
     overlap = int(overlap or os.getenv("SECOND_BRAIN_OVERLAP", srch.DEFAULT_OVERLAP))
@@ -115,7 +133,7 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
     # and reuse it for every query (not every request).
     encoder_lock = threading.Lock()
     encoder_cache: dict = {"instance": None}
-    index_lock = threading.Lock()
+    state_lock = threading.Lock()
     index_cache: dict = {"key": None, "index": None}
 
     def get_encoder():
@@ -127,11 +145,22 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
     data_path.mkdir(parents=True, exist_ok=True)
     upload_path.mkdir(parents=True, exist_ok=True)
 
-    app = FastAPI(title="Second Brain — test bench", version="2.0.0",
-                  docs_url=None, redoc_url=None)
+    app = FastAPI(title="Second Brain — test bench", version="2.0.0")
+
+    @app.middleware("http")
+    async def log_requests(request, call_next):
+        started = time.perf_counter()
+        response = await call_next(request)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        response.headers["X-Response-Time-Ms"] = f"{elapsed_ms:.1f}"
+        logger.info("%s %s -> %s in %.1f ms", request.method, request.url.path,
+                    response.status_code, elapsed_ms)
+        return response
+
     app.state.data_dir = data_path
     app.state.upload_dir = upload_path
     app.state.model = model
+    app.state.reranker_model = reranker
     app.state.max_bytes = max_bytes
     app.state.chunk_size = chunk_size
     app.state.overlap = overlap
@@ -175,14 +204,18 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
         if synced_now:
             index_cache["index"] = srch.create_index(
                 [str(data_path), str(upload_path)], model, chunk_size, overlap,
+                reranker_model=reranker,
             )
             index_cache["key"] = key
+            logger.info("index synced: %d chunks from %d document(s)",
+                        len(index_cache["index"]["chunks"]),
+                        len(corpus["base"]) + len(corpus["uploads"]))
         return corpus, index_cache["index"], synced_now
 
     def run_search(question: str, top_k: int, mode: Mode, source: str | None
                    ) -> tuple[dict, dict, list[dict], bool]:
         try:
-            with index_lock:
+            with state_lock:
                 corpus, index, synced_now = sync_index()
                 if not index["chunks"]:
                     errors = "; ".join(f"{e['file']}: {e['error']}" for e in index["errors"])
@@ -193,7 +226,8 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
                 encoder = index["encoder"] or get_encoder()
                 hits = srch.query_index(
                     index, encoder, question, top_k=top_k, source=source,
-                    hybrid=mode == "hybrid", rerank=mode == "rerank",
+                    hybrid=mode in ("hybrid", "hybrid+rerank"),
+                    rerank=mode in ("rerank", "hybrid+rerank"),
                 )
         except StoreUnavailable as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -245,7 +279,7 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
     # ---------- upload / clear ----------
 
     @app.post("/api/upload")
-    async def upload(file: UploadFile = File(...)) -> dict:  # noqa: B008 — FastAPI idiom
+    def upload(file: UploadFile = File(...)) -> dict:  # noqa: B008 — FastAPI idiom
         suffix = Path(file.filename or "").suffix.lower()
         if suffix not in ALLOWED_EXTENSIONS:
             raise HTTPException(
@@ -268,7 +302,7 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
         fd, tmp_name = tempfile.mkstemp(prefix=".upload-", dir=upload_path)
         try:
             with os.fdopen(fd, "wb") as handle:
-                while chunk := await file.read(1024 * 1024):
+                while chunk := file.file.read(1024 * 1024):
                     written += len(chunk)
                     if written > max_bytes:
                         raise HTTPException(
@@ -278,7 +312,12 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
                     handle.write(chunk)
             if written == 0:
                 raise HTTPException(status_code=400, detail="empty file rejected")
-            os.replace(tmp_name, dest)
+            # The visible swap and cache invalidation share the lock used by
+            # run_search, so a concurrent query cannot observe a half-updated
+            # directory (directory_token would stat a file being replaced).
+            with state_lock:
+                os.replace(tmp_name, dest)
+                invalidate_index()
         except BaseException:
             try:
                 os.unlink(tmp_name)
@@ -286,25 +325,28 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
                 pass
             raise
 
-        invalidate_index()
         return {"name": safe_name, "bytes": written, "replaced": replaced}
 
     @app.delete("/api/uploads/{name}")
     def delete_upload(name: str) -> dict:
         safe = sanitize_filename(name)
-        target = upload_path / safe
-        if not target.is_file():
-            raise HTTPException(status_code=404, detail=f"no such upload: {safe}")
-        target.unlink()
-        invalidate_index()
+        with state_lock:
+            target = upload_path / safe
+            if not target.is_file():
+                raise HTTPException(status_code=404, detail=f"no such upload: {safe}")
+            target.unlink()
+            invalidate_index()
         return {"removed": safe}
 
     @app.post("/api/uploads/clear")
     def clear_uploads() -> dict:
-        removed = [p for p in upload_path.iterdir() if p.is_file()]
-        for p in removed:
-            p.unlink()
-        invalidate_index()
+        with state_lock:
+            # Skip in-flight .upload-* temp files from a concurrent upload.
+            removed = [p for p in upload_path.iterdir()
+                       if p.is_file() and not p.name.startswith(".upload-")]
+            for p in removed:
+                p.unlink()
+            invalidate_index()
         return {"removed": len(removed)}
 
     # ---------- result shape ----------
