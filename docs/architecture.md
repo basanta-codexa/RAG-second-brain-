@@ -90,20 +90,20 @@ deleted upload's chunks do not linger until the next sync.
 
 ## Configuration
 
-Environment variables, with a `.env` file loaded explicitly by the web app and
-the transcription script. See the README for the full list. Model loading is
-lazy, so importing the package never downloads weights.
+Environment variables, with a `.env` file loaded explicitly by the CLI, web
+app, evaluation script, and transcription script. See the README for the full
+list. Model loading is lazy, so importing the package never downloads weights.
 
 ## Design limits
 
-- Hybrid scoring is in-process and O(corpus). Measured at roughly 1.5 ms for
-  3,000 chunks; larger corpora need Qdrant-side sparse vectors.
+- Hybrid scoring is in-process and O(corpus). Roughly 1.5 ms for 3,000 chunks
+  on the author's machine; larger corpora need Qdrant-side sparse vectors.
 - The directory token uses file size and mtime. Restoring files with preserved
   timestamps requires `--rebuild`.
 - The web app has no authentication and binds to localhost.
 - Citation checks detect out-of-range reference numbers only; answers are not
   factually verified.
-- The evaluation document uses 26 of 39 transcribed pages, covering every page
-  in the test set.
+- Evaluation numbers were measured on an earlier 26-page version of the corpus;
+  the source has since been expanded. Re-run `evaluate.py` on your own data.
 
 Measured results are in [retrieval-evaluation.md](retrieval-evaluation.md).

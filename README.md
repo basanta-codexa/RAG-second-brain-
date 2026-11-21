@@ -7,7 +7,7 @@ through Gemini before indexing.
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-89%20passing-0A9EDC?logo=pytest&logoColor=white)](tests/)
+[![CI](https://github.com/basanta-codexa/RAG-second-brain-/actions/workflows/ci.yml/badge.svg)](https://github.com/basanta-codexa/RAG-second-brain-/actions/workflows/ci.yml)
 
 ## Quick start
 
@@ -91,14 +91,17 @@ Details are in [docs/architecture.md](docs/architecture.md).
 | `rerank` | Cross-encoder reranking of the vector top 20. |
 | `hybrid+rerank` | Fusion first, then cross-encoder reranking of the fused pool. |
 
-The default is `vector`. On the 45-case test set it scored 19/22 on strict hit@1
-and answered in 47 ms; `hybrid+rerank` scored 15/22 at roughly 1.1 s. The full
-comparison, including two reranker models, is in
+The default is `vector`. On the author's local corpus (not shipped) it scored
+19/22 on strict hit@1 and answered in 47 ms; `hybrid+rerank` scored 15/22 at
+roughly 1.1 s. Treat these as historical measurements: the corpus has since
+changed, and a fresh clone must re-run `evaluate.py` on its own documents. The
+full comparison, including two reranker models, is in
 [docs/retrieval-evaluation.md](docs/retrieval-evaluation.md).
 
 Hybrid modes score against a BM25 index and vector matrix built once per index
 sync, so queries do not pull the whole corpus over HTTP. Scoring is still
-O(corpus) per query: about 1.5 ms for 3,000 chunks at 768 dimensions.
+O(corpus) per query: about 1.5 ms for 3,000 chunks at 768 dimensions on the
+author's machine.
 
 Source filters take either an origin (`data/notes.md`) or a filename
 (`notes.pdf`); an unknown source returns `400`.
@@ -222,8 +225,8 @@ testset.py    retrieval test cases
 - Removing Qdrant storage while the app runs requires an app restart.
 - Markdown page numbers require `<<<PAGE n>>>` markers; without them the file is
   treated as page 1.
-- Only 26 of 39 source pages were transcribed. The evaluation document covers
-  every page referenced by the test set.
+- `data/` and `transcripts/` are local and gitignored. A fresh clone has no
+  corpus, so evaluation numbers depend on the documents you add.
 
 ## License
 

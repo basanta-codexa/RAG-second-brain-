@@ -1,9 +1,11 @@
 # Retrieval evaluation
 
-Scope: 45 of 45 test cases, 2026-11-17. The system-design source in `data/` was
-built from 26 cached transcript pages rather than the full 39-page PDF. All 12
-cases that reference it point to pages 2–15, so their source material is present.
-Re-run if the remaining pages are transcribed.
+Scope: 45 of 45 test cases, measured 2026-11-17. At that time the system-design
+source in `data/` was built from 26 cached transcript pages rather than the full
+39-page PDF; it has since been expanded. These numbers are therefore historical
+and not directly comparable to the current corpus. All 12 cases that referenced
+it pointed to pages 2–15, so their source material was present. Re-run
+`evaluate.py` after any corpus change.
 
 ## Setup
 
@@ -104,3 +106,6 @@ python evaluate.py --k 3 --rerank
 python evaluate.py --k 3 --hybrid-rerank
 python evaluate.py --k 3 --rerank --reranker BAAI/bge-reranker-base
 ```
+
+The corpus, Qdrant snapshot, and model cache are not shipped with the repo, so
+these commands reproduce the method, not the author's exact numbers.
