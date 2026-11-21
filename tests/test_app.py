@@ -306,6 +306,41 @@ def test_failed_index_sync_is_retried_on_the_next_request(monkeypatch, client):
     assert len(calls) == 3  # an error is not a stable cache state
 
 
+def test_document_detail_reports_pages_chunks_and_preview(client):
+    data_dir = Path(client.app.state.data_dir)
+    (data_dir / "notes.md").write_text(
+        "hello alpha\n\n<<<PAGE 2>>>\nbeta world", encoding="utf-8")
+
+    res = client.get("/api/documents/data/notes.md")
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["name"] == "notes.md"
+    assert body["origin"] == "data/notes.md"
+    assert body["pages"] == 2
+    assert body["chunks"] > 0
+    assert "<<<PAGE 2>>>" in body["preview"]
+    assert len(body["sha256"]) == 64
+    assert body["indexed"] is False
+    assert body["index_errors"] == []
+
+
+def test_document_detail_for_an_upload(client):
+    client.post("/api/upload", files={
+        "file": ("notes.txt", b"alpha beta gamma", "text/plain"),
+    })
+
+    res = client.get("/api/documents/uploads/notes.txt")
+
+    assert res.status_code == 200
+    assert res.json()["origin"] == "uploads/notes.txt"
+
+
+def test_document_detail_rejects_unknown_folder_and_traversal(client):
+    assert client.get("/api/documents/elsewhere/notes.md").status_code == 404
+    assert client.get("/api/documents/data/..%2Fsecrets.md").status_code in (400, 404)
+
+
 def test_busy_index_returns_409(monkeypatch, client):
     client.post("/api/upload", files={"file": ("notes.txt", b"alpha beta gamma", "text/plain")})
 

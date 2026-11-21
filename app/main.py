@@ -37,8 +37,9 @@ from pydantic import BaseModel, Field, field_validator
 
 import search as srch
 from app import generate
-from loader import SUPPORTED_SUFFIXES
-from qdrant_store import Store, StoreUnavailable
+from chunker import chunk_records
+from loader import SUPPORTED_SUFFIXES, load_pdf, load_text
+from qdrant_store import Store, StoreUnavailable, sha256_file
 
 logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -307,6 +308,44 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             "max_mb": max_bytes // (1024 * 1024),
             "max_upload_bytes": max_bytes,
             "sources": sources,
+        }
+
+    @app.get("/api/documents/{folder}/{name}")
+    def document_detail(folder: str, name: str) -> dict:
+        """Return one document's metadata, page/chunk counts and a short preview."""
+        if folder == data_path.name:
+            base = data_path
+        elif folder == upload_path.name:
+            base = upload_path
+        else:
+            raise HTTPException(status_code=404, detail=f"unknown folder: {folder}")
+        if Path(name).name != name:
+            raise HTTPException(status_code=400, detail="name must be a plain filename")
+        target = base / name
+        if not target.is_file() or target.suffix.lower() not in ALLOWED_EXTENSIONS:
+            raise HTTPException(status_code=404, detail=f"no such document: {folder}/{name}")
+
+        try:
+            records = load_pdf(target) if target.suffix.lower() == ".pdf" else load_text(target)
+            chunks = chunk_records(records, chunk_size, overlap)
+            digest = sha256_file(target)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=422, detail=f"could not read document: {exc}") from exc
+
+        origin = f"{folder}/{name}"
+        cached = index_cache["index"] or {}
+        preview = "\n\n".join(f"<<<PAGE {r['page']}>>>\n{r['text']}" for r in records[:2])
+        return {
+            "name": name,
+            "origin": origin,
+            "bytes": target.stat().st_size,
+            "modified": target.stat().st_mtime,
+            "sha256": digest,
+            "pages": len(records),
+            "chunks": len(chunks),
+            "preview": preview[:2000],
+            "indexed": any(c.get("origin") == origin for c in cached.get("chunks", [])),
+            "index_errors": [e for e in cached.get("errors", []) if e.get("file") == origin],
         }
 
     @app.get("/api/index-status")

@@ -157,6 +157,7 @@ Interactive documentation is served at `/docs` while the app is running.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/status` | Corpus, sources, model, upload limit |
+| `GET` | `/api/documents/{folder}/{name}` | Inspect one document: pages, chunks, preview |
 | `GET` | `/api/index-status` | Indexing progress |
 | `POST` | `/api/upload` | Upload one document |
 | `DELETE` | `/api/uploads/{name}` | Remove one upload |
