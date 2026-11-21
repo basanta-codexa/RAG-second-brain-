@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app, sanitize_filename
 from qdrant_store import StoreUnavailable
+from search import IndexBusy
 
 
 @pytest.fixture()
@@ -303,6 +304,19 @@ def test_failed_index_sync_is_retried_on_the_next_request(monkeypatch, client):
         assert body["cached_index"] is False
 
     assert len(calls) == 3  # an error is not a stable cache state
+
+
+def test_busy_index_returns_409(monkeypatch, client):
+    client.post("/api/upload", files={"file": ("notes.txt", b"alpha beta gamma", "text/plain")})
+
+    def busy(*args, **kwargs):
+        raise IndexBusy("another index sync is running")
+
+    monkeypatch.setattr("app.main.srch.create_index", busy)
+    res = client.post("/api/search", json={"question": "hello there"})
+
+    assert res.status_code == 409
+    assert res.headers["Retry-After"] == "5"
 
 
 def test_successful_index_sync_is_cached(monkeypatch, client):

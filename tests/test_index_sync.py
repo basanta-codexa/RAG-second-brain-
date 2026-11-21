@@ -5,6 +5,7 @@ the collection is gone, and old points must only be deleted once replacements
 have been upserted.
 """
 import copy
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
@@ -41,6 +42,12 @@ class FakeStore:
 
     def __init__(self, *args, **kwargs):
         pass
+
+    def lock(self, timeout=None):
+        return nullcontext()
+
+    def lock_path(self):
+        return Path(".cache/fake_state.json.lock")
 
     def exists(self):
         return type(self).exists_flag

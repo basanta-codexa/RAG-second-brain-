@@ -32,6 +32,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from filelock import Timeout
 from pydantic import BaseModel, Field, field_validator
 
 import search as srch
@@ -53,6 +54,10 @@ _RESERVED_WINDOWS_NAMES = {
 
 
 Mode = Literal["vector", "hybrid", "rerank", "hybrid+rerank"]
+
+# A web request should fail fast when the CLI (or another process) is syncing,
+# instead of holding a worker thread for the full CLI lock timeout.
+WEB_LOCK_TIMEOUT = 5.0
 
 
 class SearchRequest(BaseModel):
@@ -202,8 +207,15 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             return
         try:
             store = Store()
-            for name in names:
-                store.delete_by_origin(f"{upload_path.name}/{name}")
+            with store.lock(timeout=WEB_LOCK_TIMEOUT):
+                for name in names:
+                    store.delete_by_origin(f"{upload_path.name}/{name}")
+        except Timeout as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="another index sync is running; retry shortly",
+                headers={"Retry-After": "5"},
+            ) from exc
         except StoreUnavailable as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -215,7 +227,7 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
         if synced_now:
             index = srch.create_index(
                 [str(data_path), str(upload_path)], model, chunk_size, overlap,
-                reranker_model=reranker,
+                reranker_model=reranker, lock_timeout=WEB_LOCK_TIMEOUT,
             )
             index_cache["index"] = index
             # A sync with file errors is not a stable state: keep the key unset
@@ -254,6 +266,12 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
                     hybrid=mode in ("hybrid", "hybrid+rerank"),
                     rerank=mode in ("rerank", "hybrid+rerank"),
                 )
+        except srch.IndexBusy as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=str(exc),
+                headers={"Retry-After": "5"},
+            ) from exc
         except StoreUnavailable as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except HTTPException:

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from dotenv import load_dotenv
+from filelock import Timeout
 from rank_bm25 import BM25Okapi
 
 from chunker import chunk_records
@@ -264,15 +265,23 @@ def _embed_files(store: Store, files: list[tuple[str, Path]], model_name: str,
     return done, errors, model
 
 
+class IndexBusy(RuntimeError):
+    """Another process holds the index lock; the caller should retry."""
+
+
 def create_index(folder: str | list[str] = "data", model_name: str = DEFAULT_MODEL,
                  chunk_size: int = DEFAULT_CHUNK_SIZE, overlap: int = DEFAULT_OVERLAP,
                  rebuild: bool = False,
                  encoder: SentenceTransformer | None = None,
-                 reranker_model: str | None = None) -> dict:
+                 reranker_model: str | None = None,
+                 lock_timeout: float | None = None) -> dict:
     """Sync the Qdrant collection with the current corpus files.
 
     ``folder`` may be one folder or a list; all supported files are merged.
     Only new/changed files are (re-)embedded. Unchanged files are left alone.
+
+    A cross-process lock serializes the web app, CLI, and evaluation script, so
+    two syncs cannot plan against the same state and overwrite each other.
 
     Returns the index plus ``errors``: files that could not be read or embedded.
     Those files keep their previous points and will be retried next run.
@@ -282,6 +291,21 @@ def create_index(folder: str | list[str] = "data", model_name: str = DEFAULT_MOD
         raise ValueError("at least one corpus folder is required")
 
     store = Store()
+    try:
+        with store.lock(timeout=lock_timeout):
+            return _sync_index(store, folders, model_name, chunk_size, overlap,
+                               rebuild, encoder, reranker_model)
+    except Timeout as exc:
+        raise IndexBusy(
+            f"another index sync is running (lock: {store.lock_path()}); "
+            "wait for it to finish, or remove the lock file if it is stale"
+        ) from exc
+
+
+def _sync_index(store: Store, folders: list[str], model_name: str,
+                chunk_size: int, overlap: int, rebuild: bool,
+                encoder: SentenceTransformer | None,
+                reranker_model: str | None) -> dict:
     files = _target_files(folders)
     if not files:
         raise RuntimeError(f"no documents in {', '.join(folders)}; is everything empty?")

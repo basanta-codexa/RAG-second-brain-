@@ -7,6 +7,7 @@ and state file are exercised.
 from pathlib import Path
 
 import numpy as np
+import pytest
 from qdrant_client import QdrantClient
 
 import qdrant_store
@@ -153,3 +154,48 @@ def test_large_deletes_are_split_into_batches(tmp_path: Path, monkeypatch):
     store.delete_points(ids)
 
     assert sizes == [qdrant_store.DELETE_BATCH, 44]
+
+
+def test_sync_reports_a_lock_held_by_another_process(tmp_path: Path, monkeypatch):
+    store = make_store(tmp_path)
+    monkeypatch.setattr("search.Store", lambda *args, **kwargs: store)
+    data = tmp_path / "data"
+    write(data / "a.md", "alpha " * 30)
+
+    monkeypatch.setattr(qdrant_store, "LOCK_TIMEOUT", 0.1)
+    held = store.lock(timeout=0)
+    held.acquire()
+    try:
+        with pytest.raises(RuntimeError, match="another index sync is running"):
+            run(store, data)
+    finally:
+        held.release()
+
+    # The failed attempt must not leave the lock behind.
+    index = run(store, data)
+    assert index["errors"] == []
+    assert store.count() > 0
+
+
+def test_lock_is_released_after_a_failed_sync(tmp_path: Path, monkeypatch):
+    store = make_store(tmp_path)
+    monkeypatch.setattr("search.Store", lambda *args, **kwargs: store)
+    data = tmp_path / "data"
+    write(data / "a.md", "alpha " * 30)
+
+    real_upsert = store.upsert
+    fail = {"on": True}
+
+    def maybe_fail(chunks, vectors):
+        if fail["on"]:
+            raise qdrant_store.StoreUnavailable("backend down")
+        return real_upsert(chunks, vectors)
+
+    monkeypatch.setattr(store, "upsert", maybe_fail)
+    with pytest.raises(qdrant_store.StoreUnavailable):
+        run(store, data)
+
+    fail["on"] = False
+    index = run(store, data)
+    assert index["errors"] == []
+    assert store.count() > 0

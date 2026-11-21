@@ -22,6 +22,7 @@ import uuid
 from pathlib import Path
 
 import numpy as np
+from filelock import FileLock
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -43,6 +44,8 @@ QDRANT_URL = os.getenv("SECOND_BRAIN_QDRANT", DEFAULT_QDRANT_URL)
 # chunks, and Qdrant rejects oversized request bodies.
 UPSERT_BATCH = 128
 DELETE_BATCH = 256
+# Seconds to wait for another process (CLI, web, evaluation) to finish syncing.
+LOCK_TIMEOUT = float(os.getenv("SECOND_BRAIN_LOCK_TIMEOUT", "600"))
 _NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "second-brain/chunks")
 
 
@@ -166,6 +169,19 @@ class Store:
         raise StoreUnavailable(
             f"Qdrant {action} failed at {self.url}: {exc}"
         ) from exc
+
+    # ---------- locking ----------
+
+    def lock_path(self) -> Path:
+        return self.state_path.with_suffix(self.state_path.suffix + ".lock")
+
+    def lock(self, timeout: float | None = None) -> FileLock:
+        """Cross-process lock guarding the collection and its state file."""
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        return FileLock(
+            str(self.lock_path()),
+            timeout=LOCK_TIMEOUT if timeout is None else timeout,
+        )
 
     # ---------- collection lifecycle ----------
 

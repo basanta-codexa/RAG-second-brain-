@@ -47,6 +47,9 @@ These are load-bearing. Changes that break them will fail tests or corrupt an in
   the test suite require them.
 - `state_lock` in `app/main.py` covers every operation that changes corpus files
   or the cached index, including uploads, deletes, and clears.
+- Cross-process writes take `Store.lock()` (a file lock next to the state
+  file). Any new code that plans against state or mutates the collection must
+  hold it, or a concurrent CLI/web sync can overwrite its work.
 - Retrieval changes include a re-run of all four modes and an update to
   `docs/retrieval-evaluation.md`. Comparative claims need a recorded result.
 

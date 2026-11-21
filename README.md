@@ -140,6 +140,7 @@ Read from the environment or a `.env` file in the project root.
 | `SECOND_BRAIN_OVERLAP` | `150` | Chunk overlap, characters |
 | `SECOND_BRAIN_MAX_MB` | `25` | Upload limit |
 | `SECOND_BRAIN_QDRANT` | `http://127.0.0.1:6333` | Qdrant endpoint |
+| `SECOND_BRAIN_LOCK_TIMEOUT` | `600` | Seconds to wait for another index sync |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Answer model |
 
 CLI flags override these values; the web app reads them at startup. Changing
@@ -159,6 +160,10 @@ Interactive documentation is served at `/docs` while the app is running.
 | `POST` | `/api/uploads/clear` | Remove all uploads |
 | `POST` | `/api/search` | Retrieve passages |
 | `POST` | `/api/answer` | Generate an answer (requires consent) |
+
+Index syncs are serialized across processes. If the CLI or another process is
+syncing, a web request waits up to 5 seconds, then returns `409` with
+`Retry-After: 5`.
 
 ## Privacy and security
 

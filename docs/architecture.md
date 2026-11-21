@@ -53,6 +53,12 @@ Upserts and point deletes are split into fixed-size batches so a large document
 cannot exceed Qdrant's request-body limit. A failed batch aborts the sync before
 state is saved, so the next run retries the file.
 
+The whole sync runs under a cross-process file lock (`<state>.lock`), so the
+CLI, web app, and evaluation script cannot plan against the same state and
+overwrite each other. Upload deletes and clears take the same lock before
+purging vectors. `SECOND_BRAIN_LOCK_TIMEOUT` (default 600 s) bounds the wait; a
+timeout is reported as a busy index, not a partial write.
+
 A rebuild clears the state file before dropping the collection, so an aborted
 or crashed rebuild is retried in full instead of leaving stale point ids that
 would convince the next sync to skip repairs. A file that fails to read or
