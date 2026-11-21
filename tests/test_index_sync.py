@@ -25,6 +25,8 @@ class FakeStore:
     events: list = []
     exists_flag = False
     fail_upsert = False
+    fail_on_upsert_index = None
+    upsert_calls = 0
     collection = "fake"
 
     @classmethod
@@ -34,6 +36,8 @@ class FakeStore:
         cls.events = []
         cls.exists_flag = False
         cls.fail_upsert = False
+        cls.fail_on_upsert_index = None
+        cls.upsert_calls = 0
 
     def __init__(self, *args, **kwargs):
         pass
@@ -57,6 +61,10 @@ class FakeStore:
         type(self).events.append("save")
         type(self).state = copy.deepcopy(state)
 
+    def clear_state(self):
+        type(self).events.append("clear_state")
+        type(self).state = None
+
     def delete_points(self, ids):
         if not ids:  # real Store returns early; no-op deletes are not events
             return
@@ -65,6 +73,9 @@ class FakeStore:
             type(self).points.pop(pid, None)
 
     def upsert(self, chunks, vectors):
+        type(self).upsert_calls += 1
+        if type(self).upsert_calls == type(self).fail_on_upsert_index:
+            raise StoreUnavailable("Qdrant upsert failed at http://fake")
         if type(self).fail_upsert:
             raise StoreUnavailable("Qdrant upsert failed at http://fake")
         ids = [point_id(c["chunk_id"]) for c in chunks]
@@ -203,3 +214,27 @@ def test_backend_outage_aborts_without_saving_a_half_state(tmp_path: Path):
 
     assert FakeStore.state == old_state
     assert set(FakeStore.points) == old_points
+
+
+def test_rebuild_outage_is_repaired_by_next_sync(tmp_path: Path):
+    data = tmp_path / "data"
+    write(data / "a.md", "alpha beta gamma. " * 20)
+    write(data / "b.md", "delta epsilon zeta. " * 20)
+    run(data)
+    expected_points = set(FakeStore.points)
+    assert expected_points
+
+    FakeStore.events.clear()
+    FakeStore.upsert_calls = 0
+    FakeStore.fail_on_upsert_index = 2  # die after one file has been restored
+    with pytest.raises(StoreUnavailable):
+        run(data, rebuild=True)
+
+    assert FakeStore.state is None  # a crash must force a full rebuild
+    assert set(FakeStore.points) < expected_points  # partial collection
+
+    FakeStore.fail_on_upsert_index = None
+    index = run(data)
+    assert index["errors"] == []
+    assert set(FakeStore.points) == expected_points
+    assert set(FakeStore.state["files"]) == {"data/a.md", "data/b.md"}

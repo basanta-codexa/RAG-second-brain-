@@ -49,9 +49,12 @@ The write sequence in `search.create_index()` is ordered for crash safety:
 3. Delete their old point IDs, excluding IDs that were just overwritten.
 4. Persist state with a temp file and atomic replace.
 
-A file that fails to read or embed keeps its old points and state entry; the
-next sync retries it. `StoreUnavailable` aborts the sync before any state is
-written. This ordering is covered by tests in `tests/test_index_sync.py`.
+A rebuild clears the state file before dropping the collection, so an aborted
+or crashed rebuild is retried in full instead of leaving stale point ids that
+would convince the next sync to skip repairs. A file that fails to read or
+embed keeps its old points and state entry; the next sync retries it.
+`StoreUnavailable` aborts the sync before the final state is saved. This
+ordering is covered by tests in `tests/test_index_sync.py`.
 
 ## Retrieval
 

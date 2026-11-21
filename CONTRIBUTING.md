@@ -38,6 +38,9 @@ These are load-bearing. Changes that break them will fail tests or corrupt an in
   move that delete ahead of the upsert.
 - State is written with a temp file and `os.replace`. Do not write directly to
   the state path.
+- A rebuild clears the state file before dropping the collection. Never restore
+  the old state after a partial rebuild, or missing points will never be
+  repaired.
 - A failed file keeps its old points and state entry so the next sync retries.
 - Model and SDK imports stay inside the functions that use them. Top-level
   imports of `sentence_transformers`, `google.genai`, or `pymupdf` would make

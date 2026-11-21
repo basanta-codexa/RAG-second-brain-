@@ -207,6 +207,21 @@ class Store:
         tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
         tmp.replace(self.state_path)
 
+    def clear_state(self) -> None:
+        """Forget point ownership before a rebuild.
+
+        A rebuild drops the collection first. If the process dies or Qdrant
+        fails mid-rebuild, an old state file would still claim every point is
+        present, so the next sync would never repair the missing ones. With no
+        state, the planner is forced to re-embed everything.
+        """
+        for path in (self.state_path,
+                     self.state_path.with_suffix(self.state_path.suffix + ".tmp")):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
     # ---------- writes ----------
 
     def delete_points(self, point_ids: list[str]) -> None:

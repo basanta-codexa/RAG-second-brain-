@@ -288,6 +288,9 @@ def create_index(folder: str | list[str] = "data", model_name: str = DEFAULT_MOD
                        state, signature, store.exists())
 
     if plan_result["rebuild"]:
+        # Invalidate state before dropping: an interrupted rebuild must not
+        # leave stale point ids that convince the next sync to skip repairs.
+        store.clear_state()
         store.drop()
 
     # Files that no longer exist can be removed immediately: there is no
