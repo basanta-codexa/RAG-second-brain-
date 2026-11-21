@@ -169,10 +169,11 @@ Documents, chunks, and index state stay on this machine. Three exceptions:
 - `/api/answer` sends retrieved passages to Groq after the UI's consent switch
   is enabled.
 
-`docker-compose.yml` sets `QDRANT__TELEMETRY_DISABLED=true`. The web app has no
-authentication and binds to localhost; do not expose it to a network. Generated
-answers are not factually verified, and citation checks only catch reference
-numbers that were not sent to the model.
+`docker-compose.yml` sets `QDRANT__TELEMETRY_DISABLED=true` and binds Qdrant's
+REST port to `127.0.0.1`. The web app has no authentication and binds to
+localhost; do not expose either service to a network unless you add
+authentication. Generated answers are not factually verified, and citation
+checks only catch reference numbers that were not sent to the model.
 
 ## Tests
 
