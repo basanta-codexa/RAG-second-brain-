@@ -227,6 +227,20 @@
       <p class="foot-right">Built with FastAPI · sentence-transformers · retrieval runs locally, no telemetry</p>
     </footer>
 
+    <dialog id="doc-dialog" class="doc-dialog" aria-labelledby="doc-dialog-title">
+      <div class="doc-dialog-head">
+        <div>
+          <p class="panel-kicker">Document</p>
+          <h2 id="doc-dialog-title">Details</h2>
+        </div>
+        <button class="btn btn-ghost" id="doc-dialog-close" type="button">Close</button>
+      </div>
+      <dl id="doc-facts" class="doc-facts"></dl>
+      <h3>Extracted text preview</h3>
+      <pre id="doc-preview" class="doc-preview"></pre>
+      <p id="doc-dialog-error" class="notice" role="alert" hidden></p>
+    </dialog>
+
     <script src="/static/app.js" defer></script>
   </body>
 </html>

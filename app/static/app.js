@@ -25,6 +25,12 @@ const el = {
   uploadList: $('#upload-list'),
   baseList: $('#base-list'),
   clearUploads: $('#clear-uploads'),
+  docDialog: $('#doc-dialog'),
+  docDialogTitle: $('#doc-dialog-title'),
+  docDialogClose: $('#doc-dialog-close'),
+  docFacts: $('#doc-facts'),
+  docPreview: $('#doc-preview'),
+  docDialogError: $('#doc-dialog-error'),
 
   questionForm: $('#question-form'),
   question: $('#question'),
@@ -167,8 +173,8 @@ async function refreshStatus() {
     }
     renderSourceFilter();
 
-    renderFileList(el.uploadList, s.uploads, true);
-    renderFileList(el.baseList, s.base, false);
+    renderFileList(el.uploadList, s.uploads, true, 'uploads');
+    renderFileList(el.baseList, s.base, false, 'data');
     el.clearUploads.disabled = s.uploads.length === 0;
 
     if (s.documents > 0) {
@@ -201,7 +207,7 @@ function renderSourceFilter() {
   el.sourceFilter.value = state.sources.includes(previous) ? previous : '';
 }
 
-function renderFileList(list, files, removable) {
+function renderFileList(list, files, removable, folder) {
   list.replaceChildren();
   if (!files.length) {
     const li = document.createElement('li');
@@ -230,6 +236,14 @@ function renderFileList(list, files, removable) {
     meta.append(name, sub);
     li.append(icon, meta);
 
+    const detail = document.createElement('button');
+    detail.className = 'file-detail';
+    detail.type = 'button';
+    detail.textContent = 'Details';
+    detail.setAttribute('aria-label', `Inspect ${file.name}`);
+    detail.addEventListener('click', () => openDocumentDetail(folder, file.name));
+    li.append(detail);
+
     if (removable) {
       const btn = document.createElement('button');
       btn.className = 'file-remove';
@@ -242,6 +256,52 @@ function renderFileList(list, files, removable) {
     list.appendChild(li);
   }
 }
+
+async function openDocumentDetail(folder, name) {
+  clearNotice(el.docDialogError);
+  el.docDialogTitle.textContent = name;
+  el.docFacts.replaceChildren();
+  el.docPreview.textContent = 'Loading…';
+  if (typeof el.docDialog.showModal === 'function') el.docDialog.showModal();
+  else el.docDialog.setAttribute('open', '');
+
+  try {
+    const url = `/api/documents/${encodeURIComponent(folder)}/${encodeURIComponent(name)}`;
+    const res = await fetch(url);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.detail || `request failed (${res.status})`);
+
+    const facts = [
+      ['Origin', body.origin],
+      ['Size', fmtBytes(body.bytes)],
+      ['Modified', new Date(body.modified * 1000).toLocaleString()],
+      ['SHA-256', body.sha256],
+      ['Pages', String(body.pages)],
+      ['Chunks', String(body.chunks)],
+      ['Indexed', body.indexed ? 'Yes' : 'No'],
+    ];
+    for (const [label, value] of facts) {
+      const dt = document.createElement('dt');
+      dt.textContent = label;
+      const dd = document.createElement('dd');
+      dd.textContent = value ?? '';
+      el.docFacts.append(dt, dd);
+    }
+    el.docPreview.textContent = body.preview || '(no extracted text)';
+    const errors = body.index_errors || [];
+    if (errors.length) {
+      showNotice(el.docDialogError, `Indexing errors: ${errors.map(e => e.error).join('; ')}`, true);
+    }
+  } catch (err) {
+    showNotice(el.docDialogError, err.message || 'Could not load document details.', true);
+    el.docPreview.textContent = '';
+  }
+}
+
+el.docDialogClose.addEventListener('click', () => {
+  if (typeof el.docDialog.close === 'function') el.docDialog.close();
+  else el.docDialog.removeAttribute('open');
+});
 
 function setBusy(kind, badgeText, healthText) {
   el.healthDot.classList.toggle('busy', kind === 'busy');
