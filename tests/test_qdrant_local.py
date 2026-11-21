@@ -9,8 +9,9 @@ from pathlib import Path
 import numpy as np
 from qdrant_client import QdrantClient
 
+import qdrant_store
 import search
-from qdrant_store import Store
+from qdrant_store import Store, point_id
 
 
 class KeywordEncoder:
@@ -113,3 +114,42 @@ def test_in_memory_rebuild_flag_is_safe(tmp_path: Path, monkeypatch):
     index = run(store, data, rebuild=True)
     assert index["errors"] == []
     assert store.count() == before
+
+
+def test_large_upserts_are_split_into_batches(tmp_path: Path, monkeypatch):
+    store = make_store(tmp_path)
+    monkeypatch.setattr("search.Store", lambda *args, **kwargs: store)
+
+    data = tmp_path / "data"
+    write(data / "big.md", "alpha " * 2000)  # ~300 chunks at chunk_size=50
+
+    sizes = []
+    real_upsert = store.client.upsert
+
+    def counting_upsert(*args, **kwargs):
+        sizes.append(len(kwargs["points"]))
+        return real_upsert(*args, **kwargs)
+
+    monkeypatch.setattr(store.client, "upsert", counting_upsert)
+    index = run(store, data)
+
+    assert index["errors"] == []
+    assert len(sizes) > 1
+    assert all(size <= qdrant_store.UPSERT_BATCH for size in sizes)
+    assert sum(sizes) == store.count()
+
+
+def test_large_deletes_are_split_into_batches(tmp_path: Path, monkeypatch):
+    store = make_store(tmp_path)
+    store.create(8)
+
+    sizes = []
+
+    def fake_delete(*args, **kwargs):
+        sizes.append(len(kwargs["points_selector"].points))
+
+    monkeypatch.setattr(store.client, "delete", fake_delete)
+    ids = [point_id(f"chunk-{i}") for i in range(qdrant_store.DELETE_BATCH + 44)]
+    store.delete_points(ids)
+
+    assert sizes == [qdrant_store.DELETE_BATCH, 44]

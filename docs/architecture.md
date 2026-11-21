@@ -49,6 +49,10 @@ The write sequence in `search.create_index()` is ordered for crash safety:
 3. Delete their old point IDs, excluding IDs that were just overwritten.
 4. Persist state with a temp file and atomic replace.
 
+Upserts and point deletes are split into fixed-size batches so a large document
+cannot exceed Qdrant's request-body limit. A failed batch aborts the sync before
+state is saved, so the next run retries the file.
+
 A rebuild clears the state file before dropping the collection, so an aborted
 or crashed rebuild is retried in full instead of leaving stale point ids that
 would convince the next sync to skip repairs. A file that fails to read or

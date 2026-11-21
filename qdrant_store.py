@@ -39,6 +39,10 @@ SCHEMA_VERSION = 2
 STATE_PATH = Path(".cache") / "qdrant_state.json"
 DEFAULT_QDRANT_URL = "http://127.0.0.1:6333"
 QDRANT_URL = os.getenv("SECOND_BRAIN_QDRANT", DEFAULT_QDRANT_URL)
+# Keep individual requests small: a single large file can produce thousands of
+# chunks, and Qdrant rejects oversized request bodies.
+UPSERT_BATCH = 128
+DELETE_BATCH = 256
 _NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "second-brain/chunks")
 
 
@@ -228,10 +232,12 @@ class Store:
         if not point_ids or not self.exists():
             return
         try:
-            self.client.delete(
-                collection_name=self.collection,
-                points_selector=PointIdsList(points=point_ids),
-            )
+            for start in range(0, len(point_ids), DELETE_BATCH):
+                self.client.delete(
+                    collection_name=self.collection,
+                    points_selector=PointIdsList(
+                        points=point_ids[start:start + DELETE_BATCH]),
+                )
         except Exception as exc:
             self._fail("point delete", exc)
 
@@ -269,7 +275,11 @@ class Store:
             for pid, vec, c in zip(ids, arr, chunks, strict=True)
         ]
         try:
-            self.client.upsert(collection_name=self.collection, points=points)
+            for start in range(0, len(points), UPSERT_BATCH):
+                self.client.upsert(
+                    collection_name=self.collection,
+                    points=points[start:start + UPSERT_BATCH],
+                )
         except Exception as exc:
             self._fail("upsert", exc)
         return ids
