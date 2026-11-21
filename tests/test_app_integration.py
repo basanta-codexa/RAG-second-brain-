@@ -47,6 +47,7 @@ def test_full_request_path(tmp_path: Path, monkeypatch):
     store = make_store(tmp_path)
     encoder = KeywordEncoder()
     monkeypatch.setattr("search.Store", lambda *args, **kwargs: store)
+    monkeypatch.setattr("app.main.Store", lambda *args, **kwargs: store)
     monkeypatch.setattr("search.load_encoder", lambda model: encoder)
 
     data = tmp_path / "data"
