@@ -378,8 +378,14 @@ el.themeToggle.addEventListener('click', () => {
 /* ---------- upload ---------- */
 
 el.fileInput.addEventListener('change', () => {
-  const file = el.fileInput.files && el.fileInput.files[0];
-  el.selectedFile.textContent = file ? `${file.name} · ${fmtBytes(file.size)}` : 'No file selected';
+  const files = Array.from(el.fileInput.files || []);
+  if (!files.length) el.selectedFile.textContent = 'No file selected';
+  else if (files.length === 1) {
+    el.selectedFile.textContent = `${files[0].name} · ${fmtBytes(files[0].size)}`;
+  } else {
+    const total = files.reduce((sum, f) => sum + f.size, 0);
+    el.selectedFile.textContent = `${files.length} files selected · ${fmtBytes(total)}`;
+  }
   clearNotice(el.uploadMsg);
 });
 
@@ -396,27 +402,37 @@ el.dropzone.addEventListener('drop', (e) => {
 
 el.dropzone.addEventListener('submit', async (event) => {
   event.preventDefault();
-  const file = el.fileInput.files && el.fileInput.files[0];
-  if (!file) return;
-  if (state.maxUploadBytes && file.size > state.maxUploadBytes) {
-    showNotice(el.uploadMsg, `${file.name} is larger than the ${fmtBytes(state.maxUploadBytes)} limit.`, true);
+  const files = Array.from(el.fileInput.files || []);
+  if (!files.length) return;
+  const tooBig = files.filter(f => state.maxUploadBytes && f.size > state.maxUploadBytes);
+  if (tooBig.length) {
+    showNotice(el.uploadMsg,
+      `${tooBig.map(f => f.name).join(', ')} exceed the ${fmtBytes(state.maxUploadBytes)} limit.`, true);
     return;
   }
   clearNotice(el.uploadMsg);
   el.dropzone.setAttribute('aria-busy', 'true');
   el.uploadBtn.disabled = true;
   el.uploadBtn.textContent = 'Saving…';
-  setBusy('busy', 'Saving file…', 'Saving…');
+  setBusy('busy', files.length === 1 ? 'Saving file…' : `Saving ${files.length} files…`, 'Saving…');
 
   const body = new FormData();
-  body.append('file', file);
+  for (const file of files) body.append('files', file);
 
   try {
     const res = await fetch('/api/upload', { method: 'POST', body });
     const payload = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(payload.detail || `upload failed (${res.status})`);
+    const saved = payload.saved || [];
+    const errors = payload.errors || [];
+    const names = saved.map(s => s.name);
+    const replaced = saved.filter(s => s.replaced).map(s => s.name);
     showNotice(el.uploadMsg,
-      `Saved ${payload.name}${payload.replaced ? ' (replaced existing file)' : ''}. The index rebuilds on the next search — only this file is re-embedded.`);
+      `Saved ${payload.count ?? saved.length} file(s): ${names.join(', ')}` +
+      (replaced.length ? ` · replaced: ${replaced.join(', ')}` : '') +
+      (errors.length ? ` · failed: ${errors.map(e => e.file).join(', ')}` : '') +
+      '. The index rebuilds on the next search.',
+      errors.length > 0);
     el.fileInput.value = '';
     el.selectedFile.textContent = 'No file selected';
     resetAnswer();

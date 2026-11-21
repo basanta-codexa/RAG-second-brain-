@@ -38,8 +38,9 @@ python evaluate.py --k 3
 
 ## Interface
 
-The workbench shows the corpus and the question form. Search returns ranked
-passages with source and page. Click **Details** on any file to see its page
+The workbench shows the corpus and the question form. You can drop several
+files at once. Search returns ranked passages with source and page. Click
+**Details** on any file to see its page
 and chunk counts, SHA-256, byte-identical duplicates, index status and a short
 extracted-text preview. No answer is generated unless the consent switch is
 enabled.
@@ -161,7 +162,7 @@ Interactive documentation is served at `/docs` while the app is running.
 | `GET` | `/api/status` | Corpus, sources, model, upload limit |
 | `GET` | `/api/documents/{folder}/{name}` | Inspect one document: pages, chunks, preview |
 | `GET` | `/api/index-status` | Indexing progress |
-| `POST` | `/api/upload` | Upload one document |
+| `POST` | `/api/upload` | Upload one or more documents |
 | `DELETE` | `/api/uploads/{name}` | Remove one upload |
 | `POST` | `/api/uploads/clear` | Remove all uploads |
 | `POST` | `/api/search` | Retrieve passages |

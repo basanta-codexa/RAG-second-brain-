@@ -383,8 +383,7 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
 
     # ---------- upload / clear ----------
 
-    @app.post("/api/upload")
-    def upload(file: UploadFile = File(...)) -> dict:  # noqa: B008 — FastAPI idiom
+    def _save_upload(file: UploadFile) -> dict:
         suffix = Path(file.filename or "").suffix.lower()
         if suffix not in ALLOWED_EXTENSIONS:
             raise HTTPException(
@@ -431,6 +430,37 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             raise
 
         return {"name": safe_name, "bytes": written, "replaced": replaced}
+
+    @app.post("/api/upload")
+    def upload(
+        file: UploadFile | None = File(default=None),  # noqa: B008 — FastAPI idiom
+        files: list[UploadFile] | None = File(default=None),  # noqa: B008
+    ) -> dict:
+        """Accept one or more documents. ``file`` is kept for older clients."""
+        incoming = ([file] if file is not None else []) + list(files or [])
+        if not incoming:
+            raise HTTPException(status_code=400, detail="no files supplied")
+
+        saved: list[dict] = []
+        errors: list[dict] = []
+        for item in incoming:
+            try:
+                saved.append(_save_upload(item))
+            except HTTPException as exc:
+                errors.append({
+                    "file": item.filename or "unknown",
+                    "error": exc.detail,
+                    "status": exc.status_code,
+                })
+        if not saved and errors:
+            raise HTTPException(status_code=errors[0]["status"], detail=errors[0]["error"])
+
+        return {
+            **(saved[0] if saved else {}),
+            "saved": saved,
+            "errors": errors,
+            "count": len(saved),
+        }
 
     @app.delete("/api/uploads/{name}")
     def delete_upload(name: str) -> dict:

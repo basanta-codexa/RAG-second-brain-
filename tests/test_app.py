@@ -306,6 +306,34 @@ def test_failed_index_sync_is_retried_on_the_next_request(monkeypatch, client):
     assert len(calls) == 3  # an error is not a stable cache state
 
 
+def test_upload_accepts_multiple_files(client):
+    res = client.post("/api/upload", files=[
+        ("files", ("a.md", b"alpha content", "text/markdown")),
+        ("files", ("b.txt", b"beta content", "text/plain")),
+    ])
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["count"] == 2
+    assert [s["name"] for s in body["saved"]] == ["a.md", "b.txt"]
+    assert body["errors"] == []
+    assert {"uploads/a.md", "uploads/b.txt"} <= set(
+        client.get("/api/status").json()["sources"])
+
+
+def test_multi_upload_reports_per_file_errors(client):
+    res = client.post("/api/upload", files=[
+        ("files", ("good.md", b"ok", "text/markdown")),
+        ("files", ("bad.exe", b"nope", "application/octet-stream")),
+    ])
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["count"] == 1
+    assert body["errors"][0]["file"] == "bad.exe"
+    assert body["errors"][0]["status"] == 400
+
+
 def test_document_detail_reports_pages_chunks_and_preview(client):
     data_dir = Path(client.app.state.data_dir)
     (data_dir / "notes.md").write_text(
