@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field, field_validator
 import search as srch
 from app import generate
 from loader import SUPPORTED_SUFFIXES
-from qdrant_store import StoreUnavailable
+from qdrant_store import Store, StoreUnavailable
 
 logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -196,6 +196,17 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
     def invalidate_index() -> None:
         index_cache["key"] = None
 
+    def purge_upload_vectors(names: list[str]) -> None:
+        """Remove Qdrant points for uploads before their files are unlinked."""
+        if not names:
+            return
+        try:
+            store = Store()
+            for name in names:
+                store.delete_by_origin(f"{upload_path.name}/{name}")
+        except StoreUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     def sync_index() -> tuple[dict, dict, bool]:
         """Return (corpus, index, synced_now)."""
         corpus = corpus_or_409()
@@ -342,6 +353,7 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             target = upload_path / safe
             if not target.is_file():
                 raise HTTPException(status_code=404, detail=f"no such upload: {safe}")
+            purge_upload_vectors([safe])
             target.unlink()
             invalidate_index()
         return {"removed": safe}
@@ -352,6 +364,7 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             # Skip in-flight .upload-* temp files from a concurrent upload.
             removed = [p for p in upload_path.iterdir()
                        if p.is_file() and not p.name.startswith(".upload-")]
+            purge_upload_vectors([p.name for p in removed])
             for p in removed:
                 p.unlink()
             invalidate_index()

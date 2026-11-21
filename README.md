@@ -209,6 +209,8 @@ testset.py    retrieval test cases
 
 - PDF text extraction varies with layout; tables, equations, and scans may need
   OCR or manual cleanup.
+- Deleting an upload purges its vectors immediately. Adding or removing files in
+  `data/` is applied on the next search.
 - The web index cache keys on file size and mtime. Restoring files with
   preserved timestamps needs a rebuild.
 - Removing Qdrant storage while the app runs requires an app restart.

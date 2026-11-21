@@ -90,3 +90,41 @@ def test_full_request_path(tmp_path: Path, monkeypatch):
     after = client.post("/api/search", json={"question": "beta", "top_k": 3}).json()
     assert all(hit["source"] != "notes.txt" for hit in after["hits"])
     assert "uploads/notes.txt" not in client.get("/api/status").json()["sources"]
+
+
+def _app_with_store(tmp_path: Path, monkeypatch) -> tuple[TestClient, Store]:
+    store = make_store(tmp_path)
+    monkeypatch.setattr("search.Store", lambda *a, **kw: store)
+    monkeypatch.setattr("app.main.Store", lambda *a, **kw: store)
+    monkeypatch.setattr("search.load_encoder", lambda model: KeywordEncoder())
+    app = create_app(
+        data_dir=str(tmp_path / "data"),
+        upload_dir=str(tmp_path / "uploads"),
+        model_name="test-model",
+    )
+    return TestClient(app), store
+
+
+def test_deleting_an_upload_purges_vectors_without_another_search(tmp_path, monkeypatch):
+    client, store = _app_with_store(tmp_path, monkeypatch)
+    assert client.post("/api/upload", files={
+        "file": ("notes.txt", b"beta is the second letter.", "text/plain"),
+    }).status_code == 200
+    client.post("/api/search", json={"question": "beta"})
+    assert any(row["origin"] == "uploads/notes.txt" for row in store.scroll_all())
+
+    assert client.delete("/api/uploads/notes.txt").status_code == 200
+    assert all(row["origin"] != "uploads/notes.txt" for row in store.scroll_all())
+
+
+def test_clear_uploads_purges_vectors_without_another_search(tmp_path, monkeypatch):
+    client, store = _app_with_store(tmp_path, monkeypatch)
+    for name in ("a.txt", "b.txt"):
+        assert client.post("/api/upload", files={
+            "file": (name, b"gamma is the third letter.", "text/plain"),
+        }).status_code == 200
+    client.post("/api/search", json={"question": "gamma"})
+    assert any(row["origin"].startswith("uploads/") for row in store.scroll_all())
+
+    assert client.post("/api/uploads/clear").status_code == 200
+    assert all(not row["origin"].startswith("uploads/") for row in store.scroll_all())
