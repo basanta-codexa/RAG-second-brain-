@@ -336,6 +336,29 @@ def test_document_detail_for_an_upload(client):
     assert res.json()["origin"] == "uploads/notes.txt"
 
 
+def test_document_detail_lists_duplicates_by_hash(client):
+    data_dir = Path(client.app.state.data_dir)
+    (data_dir / "a.md").write_text("identical content", encoding="utf-8")
+    (data_dir / "b.md").write_text("identical content", encoding="utf-8")
+    (data_dir / "c.md").write_text("different content", encoding="utf-8")
+
+    body = client.get("/api/documents/data/a.md").json()
+
+    assert body["duplicates"] == ["data/b.md"]
+
+
+def test_document_detail_finds_a_duplicate_in_uploads(client):
+    data_dir = Path(client.app.state.data_dir)
+    (data_dir / "a.md").write_text("same bytes", encoding="utf-8")
+    client.post("/api/upload", files={
+        "file": ("copy.md", b"same bytes", "text/markdown"),
+    })
+
+    body = client.get("/api/documents/data/a.md").json()
+
+    assert "uploads/copy.md" in body["duplicates"]
+
+
 def test_document_detail_rejects_unknown_folder_and_traversal(client):
     assert client.get("/api/documents/elsewhere/notes.md").status_code == 404
     assert client.get("/api/documents/data/..%2Fsecrets.md").status_code in (400, 404)

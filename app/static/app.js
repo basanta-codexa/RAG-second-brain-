@@ -276,6 +276,8 @@ async function openDocumentDetail(folder, name) {
       ['Size', fmtBytes(body.bytes)],
       ['Modified', new Date(body.modified * 1000).toLocaleString()],
       ['SHA-256', body.sha256],
+      ['Duplicates', body.duplicates && body.duplicates.length
+        ? body.duplicates.join(', ') : 'none'],
       ['Pages', String(body.pages)],
       ['Chunks', String(body.chunks)],
       ['Indexed', body.indexed ? 'Yes' : 'No'],

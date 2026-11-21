@@ -40,8 +40,9 @@ python evaluate.py --k 3
 
 The workbench shows the corpus and the question form. Search returns ranked
 passages with source and page. Click **Details** on any file to see its page
-and chunk counts, SHA-256, index status and a short extracted-text preview. No
-answer is generated unless the consent switch is enabled.
+and chunk counts, SHA-256, byte-identical duplicates, index status and a short
+extracted-text preview. No answer is generated unless the consent switch is
+enabled.
 
 ![Workbench: upload panel and question form](docs/screenshots/01-workbench.png)
 

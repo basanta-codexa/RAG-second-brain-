@@ -177,6 +177,17 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
         return [file_info(p, f"{folder.name}/{p.name}") for p in sorted(folder.iterdir())
                 if p.is_file() and p.suffix.lower() in ALLOWED_EXTENSIONS]
 
+    def all_document_paths() -> list[tuple[Path, str]]:
+        """Every supported file with its origin, across both folders."""
+        found = []
+        for folder in (data_path, upload_path):
+            if not folder.is_dir():
+                continue
+            for path in sorted(folder.iterdir()):
+                if path.is_file() and path.suffix.lower() in ALLOWED_EXTENSIONS:
+                    found.append((path, f"{folder.name}/{path.name}"))
+        return found
+
     def corpus_or_409() -> dict:
         base, uploads = supported_files(data_path), supported_files(upload_path)
         if not base and not uploads:
@@ -335,12 +346,24 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
         origin = f"{folder}/{name}"
         cached = index_cache["index"] or {}
         preview = "\n\n".join(f"<<<PAGE {r['page']}>>>\n{r['text']}" for r in records[:2])
+
+        duplicates = []
+        for other, other_origin in all_document_paths():
+            if other == target:
+                continue
+            try:
+                if sha256_file(other) == digest:
+                    duplicates.append(other_origin)
+            except OSError:
+                continue
+
         return {
             "name": name,
             "origin": origin,
             "bytes": target.stat().st_size,
             "modified": target.stat().st_mtime,
             "sha256": digest,
+            "duplicates": duplicates,
             "pages": len(records),
             "chunks": len(chunks),
             "preview": preview[:2000],
