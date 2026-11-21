@@ -5,7 +5,10 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 const byName = (n) => $(`input[name="mode"][value="${n}"]`);
 
-const state = { documents: 0, allowAI: false, sources: [], lastAnswer: null, busy: false };
+const state = {
+  documents: 0, allowAI: false, sources: [], lastAnswer: null, busy: false,
+  maxUploadBytes: null,
+};
 
 const el = {
   healthDot: $('#health-dot'),
@@ -14,6 +17,7 @@ const el = {
   themeToggle: $('#theme-toggle'),
 
   dropzone: $('#upload-form'),
+  maxUploadMb: $('#max-upload-mb'),
   fileInput: $('#file-input'),
   selectedFile: $('#selected-file'),
   uploadBtn: $('#upload-btn'),
@@ -88,7 +92,11 @@ function stageText(p) {
   return 'Working…';
 }
 function stageFraction(p) {
-  if (p.stage === 'embedding' && p.chunks_total) return p.chunks_done / p.chunks_total;
+  // Reading fills the first third; embedding fills the rest. Mapping embedding
+  // to 0..1 would jump the bar from 35% to 100% as soon as encoding starts.
+  if (p.stage === 'embedding' && p.chunks_total) {
+    return 0.35 + 0.65 * (p.chunks_done / p.chunks_total);
+  }
   if (p.stage === 'reading' && p.files_total) return (p.file_index / p.files_total) * 0.35;
   return null;
 }
@@ -153,6 +161,10 @@ async function refreshStatus() {
     const s = await res.json();
     state.documents = s.documents;
     state.sources = s.sources || [];
+    state.maxUploadBytes = s.max_upload_bytes ?? null;
+    if (el.maxUploadMb && typeof s.max_mb === 'number') {
+      el.maxUploadMb.textContent = String(s.max_mb);
+    }
     renderSourceFilter();
 
     renderFileList(el.uploadList, s.uploads, true);
@@ -303,6 +315,10 @@ el.dropzone.addEventListener('submit', async (event) => {
   event.preventDefault();
   const file = el.fileInput.files && el.fileInput.files[0];
   if (!file) return;
+  if (state.maxUploadBytes && file.size > state.maxUploadBytes) {
+    showNotice(el.uploadMsg, `${file.name} is larger than the ${fmtBytes(state.maxUploadBytes)} limit.`, true);
+    return;
+  }
   clearNotice(el.uploadMsg);
   el.uploadBtn.disabled = true;
   el.uploadBtn.textContent = 'Saving…';
