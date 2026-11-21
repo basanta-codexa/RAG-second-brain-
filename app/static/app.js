@@ -52,6 +52,7 @@ const el = {
 
   allowAi: $('#allow-ai'),
   answerBtn: $('#answer-btn'),
+  researchWorkspace: $('#research-workspace'),
   answerPanel: $('#answer-panel'),
   answerText: $('#answer-text'),
   answerModel: $('#answer-model'),
@@ -144,6 +145,7 @@ async function pollIndexStatus() {
 }
 function resetAnswer() {
   state.lastAnswer = null;
+  el.researchWorkspace.classList.remove('has-answer');
   el.answerPanel.hidden = true;
   el.answerPanel.classList.remove('refused');
   el.answerText.replaceChildren();
@@ -678,6 +680,7 @@ function highlightHit(rank) {
 
 function renderAnswer(payload) {
   state.lastAnswer = payload;
+  el.researchWorkspace.classList.add('has-answer');
   el.answerPanel.hidden = false;
   el.answerPanel.classList.toggle('refused', !!payload.refused);
   el.answerModel.textContent = payload.model || 'groq';

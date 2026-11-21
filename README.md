@@ -43,7 +43,8 @@ files at once. Search returns ranked passages with source and page. Click
 **Details** on any file to see its page
 and chunk counts, SHA-256, byte-identical duplicates, index status and a short
 extracted-text preview. No answer is generated unless the consent switch is
-enabled.
+enabled. When one is generated, the answer and its supporting passages appear
+side by side; citation chips jump to the matching passage.
 
 ![Workbench: upload panel and question form](docs/screenshots/01-workbench.png)
 

@@ -334,6 +334,34 @@ textarea:focus, select:focus { outline: none; border-color: var(--accent); box-s
   border-radius: 8px; padding: 14px 16px; background: #fdfefe;
 }
 .answer-panel.refused { border-left-color: var(--idle); }
+
+/* Answer and its supporting passages sit side by side once an answer exists. */
+.research-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  margin-top: 16px;
+}
+.research-workspace .answer-panel,
+.research-workspace .results { margin-top: 0; }
+.research-workspace.has-answer {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.research-workspace.has-answer .evidence-pane {
+  border-left: 1px solid var(--line);
+  padding-left: 16px;
+  min-width: 0;
+}
+@media (max-width: 1180px) {
+  .research-workspace.has-answer {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .research-workspace.has-answer .evidence-pane {
+    border-left: 0;
+    padding-left: 0;
+  }
+}
 .answer-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .answer-head h3 { margin: 0; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--accent-strong); }
 .answer-model { font-size: 10.5px; color: var(--muted); }

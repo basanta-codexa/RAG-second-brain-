@@ -160,29 +160,6 @@
 
         <p id="ask-message" class="notice" role="status" hidden></p>
 
-        <section id="answer-panel" class="answer-panel" hidden aria-live="polite" aria-label="Grounded answer">
-          <div class="answer-head">
-            <h3>Grounded answer</h3>
-            <span id="answer-model" class="mono answer-model"></span>
-          </div>
-          <div class="answer-toolbar">
-            <button class="btn btn-ghost" id="copy-answer" type="button">Copy answer</button>
-            <button class="btn btn-ghost" id="copy-citations" type="button">Copy citations</button>
-            <span class="copy-feedback" id="copy-feedback" role="status" aria-live="polite"></span>
-          </div>
-          <p id="answer-text" class="answer-text"></p>
-          <details class="sent-details">
-            <summary>What was sent to Groq for this answer</summary>
-            <ul id="sent-list" class="sent-list"></ul>
-          </details>
-          <p class="answer-audit">Session consent on — nothing is sent until you click <em>Grounded answer</em>. The list below contains exactly the passages included in the prompt; citations outside that list are flagged as invalid.</p>
-          <details class="evidence-check" id="evidence-check" hidden>
-            <summary id="evidence-check-summary">Evidence check</summary>
-            <ul id="weak-list" class="weak-list"></ul>
-            <p class="hint">Lexical overlap is a heuristic, not proof. Verify each flagged sentence against the cited passage.</p>
-          </details>
-        </section>
-
         <div id="ask-progress" class="ask-progress" hidden>
           <div class="progress-head">
             <span class="progress-stage" id="progress-stage">Preparing…</span>
@@ -202,24 +179,51 @@
           <li class="skeleton-line skeleton-w-75"></li>
         </ol>
 
-        <ol id="results" class="results" aria-live="polite"></ol>
-
-        <template id="hit-template">
-          <li class="hit">
-            <div class="hit-meta">
-              <span class="hit-rank mono"></span>
-              <span class="hit-source"></span>
-              <span class="hit-page mono"></span>
-              <span class="hit-score mono"></span>
+        <div id="research-workspace" class="research-workspace">
+          <section id="answer-panel" class="answer-panel" hidden aria-live="polite" aria-label="Grounded answer">
+            <div class="answer-head">
+              <h3>Grounded answer</h3>
+              <span id="answer-model" class="mono answer-model"></span>
             </div>
-            <p class="hit-text"></p>
-            <button class="toggle-text" type="button" aria-expanded="false">Expand passage</button>
-          </li>
-        </template>
+            <div class="answer-toolbar">
+              <button class="btn btn-ghost" id="copy-answer" type="button">Copy answer</button>
+              <button class="btn btn-ghost" id="copy-citations" type="button">Copy citations</button>
+              <span class="copy-feedback" id="copy-feedback" role="status" aria-live="polite"></span>
+            </div>
+            <p id="answer-text" class="answer-text"></p>
+            <details class="sent-details">
+              <summary>What was sent to Groq for this answer</summary>
+              <ul id="sent-list" class="sent-list"></ul>
+            </details>
+            <p class="answer-audit">Session consent on — nothing is sent until you click <em>Grounded answer</em>. The list below contains exactly the passages included in the prompt; citations outside that list are flagged as invalid.</p>
+            <details class="evidence-check" id="evidence-check" hidden>
+              <summary id="evidence-check-summary">Evidence check</summary>
+              <ul id="weak-list" class="weak-list"></ul>
+              <p class="hint">Lexical overlap is a heuristic, not proof. Verify each flagged sentence against the cited passage.</p>
+            </details>
+          </section>
 
-        <div id="empty-state" class="empty-state">
-          <p class="empty-title">No evidence yet</p>
-          <p class="empty-body">Upload a document on the left, then ask a question. Answers are the raw chunks the model ranked most similar — nothing is rewritten or invented.</p>
+          <div id="evidence-pane" class="evidence-pane">
+            <ol id="results" class="results" aria-live="polite"></ol>
+
+            <template id="hit-template">
+              <li class="hit">
+                <div class="hit-meta">
+                  <span class="hit-rank mono"></span>
+                  <span class="hit-source"></span>
+                  <span class="hit-page mono"></span>
+                  <span class="hit-score mono"></span>
+                </div>
+                <p class="hit-text"></p>
+                <button class="toggle-text" type="button" aria-expanded="false">Expand passage</button>
+              </li>
+            </template>
+
+            <div id="empty-state" class="empty-state">
+              <p class="empty-title">No evidence yet</p>
+              <p class="empty-body">Upload a document on the left, then ask a question. Answers are the raw chunks the model ranked most similar — nothing is rewritten or invented.</p>
+            </div>
+          </div>
         </div>
 
         <p class="disclaimer">
