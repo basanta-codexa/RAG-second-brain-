@@ -142,8 +142,9 @@ Read from the environment or a `.env` file in the project root.
 | `SECOND_BRAIN_QDRANT` | `http://127.0.0.1:6333` | Qdrant endpoint |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Answer model |
 
-Changing the embedding model, chunk size, or overlap invalidates the index and
-triggers a full rebuild.
+CLI flags override these values; the web app reads them at startup. Changing
+the embedding model, chunk size, or overlap invalidates the index and triggers
+a full rebuild.
 
 ## Web API
 

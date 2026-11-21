@@ -12,6 +12,7 @@ Honesty rules baked into this script:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -21,8 +22,12 @@ try:
 except Exception:
     pass
 
+from dotenv import load_dotenv
+
 import search as srch
 from testset import TESTS
+
+load_dotenv(Path(__file__).resolve().with_name(".env"))
 
 
 def validate_tests(tests: list[dict]) -> None:
@@ -167,11 +172,13 @@ def evaluate(folder: str, top_k: int, model_name: str,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Evaluate retrieval hit rate and MRR.")
-    parser.add_argument("--folder", default="data")
+    parser.add_argument("--folder", default=os.getenv("SECOND_BRAIN_DATA", "data"))
     parser.add_argument("--k", type=int, default=srch.DEFAULT_TOP_K)
-    parser.add_argument("--model", default=srch.DEFAULT_MODEL)
-    parser.add_argument("--chunk-size", type=int, default=srch.DEFAULT_CHUNK_SIZE)
-    parser.add_argument("--overlap", type=int, default=srch.DEFAULT_OVERLAP)
+    parser.add_argument("--model", default=os.getenv("SECOND_BRAIN_MODEL", srch.DEFAULT_MODEL))
+    parser.add_argument("--chunk-size", type=int,
+                        default=int(os.getenv("SECOND_BRAIN_CHUNK_SIZE", srch.DEFAULT_CHUNK_SIZE)))
+    parser.add_argument("--overlap", type=int,
+                        default=int(os.getenv("SECOND_BRAIN_OVERLAP", srch.DEFAULT_OVERLAP)))
     parser.add_argument("--rebuild", action="store_true",
                         help="drop the collection and re-embed everything")
     parser.add_argument("--hybrid", action="store_true",
@@ -180,7 +187,7 @@ def main() -> int:
                         help="re-rank top candidates with a cross-encoder")
     parser.add_argument("--hybrid-rerank", action="store_true",
                         help="fuse BM25+vector first, then re-rank the fused pool")
-    parser.add_argument("--reranker", default=None,
+    parser.add_argument("--reranker", default=os.getenv("SECOND_BRAIN_RERANKER"),
                         help=f"cross-encoder model id (default: {srch.RERANK_MODEL})")
     parser.add_argument("--fail-under", type=float, default=0.0,
                         help="exit 1 when hit@k is below this rate "

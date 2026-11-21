@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from dotenv import load_dotenv
 from rank_bm25 import BM25Okapi
 
 from chunker import chunk_records
@@ -35,6 +37,8 @@ from qdrant_store import (
 
 if TYPE_CHECKING:  # sentence-transformers pulls in torch; keep imports lazy
     from sentence_transformers import CrossEncoder, SentenceTransformer
+
+load_dotenv(Path(__file__).resolve().with_name(".env"))
 
 DEFAULT_MODEL = "BAAI/bge-base-en-v1.5"
 DEFAULT_CHUNK_SIZE = 800      # BGE-en reads ~512 tokens; keep chunks modest
@@ -422,10 +426,13 @@ def print_hits(hits: list[dict]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Semantic search over your corpus (Qdrant).")
-    parser.add_argument("--folder", default="data")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"embedding model (default: {DEFAULT_MODEL})")
-    parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
-    parser.add_argument("--overlap", type=int, default=DEFAULT_OVERLAP)
+    parser.add_argument("--folder", default=os.getenv("SECOND_BRAIN_DATA", "data"))
+    parser.add_argument("--model", default=os.getenv("SECOND_BRAIN_MODEL", DEFAULT_MODEL),
+                        help=f"embedding model (default: {DEFAULT_MODEL})")
+    parser.add_argument("--chunk-size", type=int,
+                        default=int(os.getenv("SECOND_BRAIN_CHUNK_SIZE", DEFAULT_CHUNK_SIZE)))
+    parser.add_argument("--overlap", type=int,
+                        default=int(os.getenv("SECOND_BRAIN_OVERLAP", DEFAULT_OVERLAP)))
     parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
     parser.add_argument("--rebuild", action="store_true", help="drop the collection and re-embed everything")
     parser.add_argument("--no-query-prefix", action="store_true",
@@ -433,7 +440,7 @@ def main() -> int:
     parser.add_argument("--hybrid", action="store_true", help="BM25+vector RRF fusion")
     parser.add_argument("--rerank", action="store_true",
                         help="re-rank with a cross-encoder")
-    parser.add_argument("--reranker", default=None,
+    parser.add_argument("--reranker", default=os.getenv("SECOND_BRAIN_RERANKER"),
                         help=f"cross-encoder model id for reranking (default: {RERANK_MODEL})")
     parser.add_argument("--question", help="ask one question and exit")
     parser.add_argument("--source", help="restrict retrieval to one origin or filename (e.g. data/notes.md)")

@@ -1,5 +1,8 @@
+import sys
+
 import numpy as np
 
+import search
 from search import RERANK_MODEL, _build_hybrid_view, query_index
 
 
@@ -203,3 +206,32 @@ def test_configured_reranker_model_is_used(monkeypatch):
 def test_source_filter_with_no_matches_returns_empty():
     hits = query_index(_index(_chunks()), FakeEncoder(), "roof", top_k=3, source="missing.md")
     assert hits == []
+
+
+def test_cli_uses_documented_environment_defaults(monkeypatch):
+    monkeypatch.setenv("SECOND_BRAIN_DATA", "corpus")
+    monkeypatch.setenv("SECOND_BRAIN_MODEL", "env/model")
+    monkeypatch.setenv("SECOND_BRAIN_CHUNK_SIZE", "321")
+    monkeypatch.setenv("SECOND_BRAIN_OVERLAP", "45")
+    monkeypatch.setenv("SECOND_BRAIN_RERANKER", "env/reranker")
+    seen = {}
+
+    def fake_create(folder, model, chunk_size, overlap, rebuild, **kwargs):
+        seen.update(folder=folder, model=model, chunk_size=chunk_size, overlap=overlap,
+                    reranker=kwargs.get("reranker_model"))
+        return {"encoder": object(), "model_name": model}
+
+    monkeypatch.setattr("search.create_index", fake_create)
+    monkeypatch.setattr("search.load_encoder", lambda model: object())
+    monkeypatch.setattr("search.query_index", lambda *a, **kw: [])
+    monkeypatch.setattr("search.print_hits", lambda hits: None)
+    monkeypatch.setattr(sys, "argv", ["search.py", "--question", "hello"])
+
+    assert search.main() == 0
+    assert seen == {
+        "folder": "corpus",
+        "model": "env/model",
+        "chunk_size": 321,
+        "overlap": 45,
+        "reranker": "env/reranker",
+    }
