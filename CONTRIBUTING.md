@@ -23,9 +23,10 @@ python -m ruff check .
 python -m compileall -q chunker.py loader.py search.py qdrant_store.py evaluate.py testset.py transcribe.py inspect_chunks.py app
 ```
 
-CI runs the same commands on Python 3.11, 3.12, and 3.13. Shared packages are
-pinned to identical versions in `requirements.txt` and `requirements-test.txt`;
-update both when bumping one.
+CI runs the same commands on Python 3.11, 3.12, and 3.13, plus a wheel
+build/install/import smoke test. Runtime pins are mirrored in `requirements.txt`
+and `pyproject.toml`; shared test pins are also in `requirements-test.txt`.
+Update every relevant file when bumping one.
 
 ## Invariants
 

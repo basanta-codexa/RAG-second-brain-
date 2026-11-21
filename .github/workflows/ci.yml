@@ -34,3 +34,10 @@ jobs:
 
       - name: Compile
         run: python -m compileall -q chunker.py loader.py search.py qdrant_store.py evaluate.py testset.py transcribe.py inspect_chunks.py app
+
+      - name: Wheel smoke test
+        run: |
+          python -m pip wheel . --no-deps -w dist
+          python -m pip install --no-deps dist/second_brain-*.whl
+          cd "${RUNNER_TEMP}"  # import the installed wheel, not the source tree
+          python -c "import app.main"
