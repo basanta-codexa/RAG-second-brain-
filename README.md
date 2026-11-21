@@ -101,7 +101,7 @@ sync, so queries do not pull the whole corpus over HTTP. Scoring is still
 O(corpus) per query: about 1.5 ms for 3,000 chunks at 768 dimensions.
 
 Source filters take either an origin (`data/notes.md`) or a filename
-(`notes.pdf`).
+(`notes.pdf`); an unknown source returns `400`.
 
 ## Evaluation
 

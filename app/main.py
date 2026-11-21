@@ -242,6 +242,12 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
                         status_code=422,
                         detail=f"no readable documents could be indexed. {errors}".strip(),
                     )
+                if source:
+                    known = {c.get("origin") for c in index["chunks"]}
+                    known |= {c["source"] for c in index["chunks"]}
+                    if source not in known:
+                        raise HTTPException(status_code=400,
+                                            detail=f"unknown source: {source}")
                 encoder = index["encoder"] or get_encoder()
                 hits = srch.query_index(
                     index, encoder, question, top_k=top_k, source=source,

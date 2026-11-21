@@ -133,6 +133,18 @@ def test_search_accepts_real_world_source_names(client):
     assert res.status_code == 409  # corpus empty, not a 422 validation error
 
 
+def test_unknown_source_is_a_400(monkeypatch, client):
+    client.post("/api/upload", files={"file": ("notes.txt", b"alpha beta gamma", "text/plain")})
+    monkeypatch.setattr("app.main.srch.create_index", lambda *a, **kw: _fake_index())
+    monkeypatch.setattr("app.main.srch.query_index", lambda *a, **kw: _fake_hits())
+
+    body = {"question": "hello there", "source": "missing.md"}
+    assert client.post("/api/search", json=body).status_code == 400
+
+    body["source"] = "uploads/notes.txt"
+    assert client.post("/api/search", json=body).status_code == 200
+
+
 def test_blank_question_is_a_validation_error(client):
     res = client.post("/api/search", json={"question": "   "})
     assert res.status_code == 422
