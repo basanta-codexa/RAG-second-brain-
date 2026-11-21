@@ -69,6 +69,22 @@ def test_bind_cache_rejects_a_different_pdf_unless_forced(tmp_path: Path):
     transcribe.bind_cache_to_pdf(cache, second, 2, force=True)
 
 
+def test_force_clears_cached_pages_but_keeps_other_files(tmp_path: Path):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "page_001.md").write_text("old page", encoding="utf-8")
+    (cache / "page_002.md").write_text("old page", encoding="utf-8")
+    (cache / "notes.txt").write_text("keep me", encoding="utf-8")
+    pdf = tmp_path / "notes.pdf"
+    pdf.write_bytes(b"pdf")
+
+    transcribe.bind_cache_to_pdf(cache, pdf, 2, force=True)
+
+    assert not (cache / "page_001.md").exists()
+    assert not (cache / "page_002.md").exists()
+    assert (cache / "notes.txt").read_text(encoding="utf-8") == "keep me"
+
+
 def test_permanent_failure_classification():
     assert transcribe._permanent_failure(ApiError(401))
     assert transcribe._permanent_failure(ApiError(404))

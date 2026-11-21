@@ -56,8 +56,19 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def clear_page_cache(cache_dir: Path) -> None:
+    """Delete cached page files, leaving the manifest and unrelated files."""
+    for path in cache_dir.glob("page_*.md"):
+        path.unlink()
+
+
 def bind_cache_to_pdf(cache_dir: Path, pdf_path: Path, total: int, force: bool) -> None:
-    """Refuse to mix pages from two different PDFs in one cache directory."""
+    """Refuse to mix pages from two different PDFs in one cache directory.
+
+    ``--force`` also clears the cached pages. Otherwise a page that fails after
+    the switch to a new PDF would keep its old text, and a later rerun without
+    ``--force`` would treat that stale page as done.
+    """
     manifest = source_manifest(cache_dir)
     digest = sha256_file(pdf_path)
     if manifest.exists():
@@ -75,6 +86,8 @@ def bind_cache_to_pdf(cache_dir: Path, pdf_path: Path, total: int, force: bool) 
         manifest,
         json.dumps({"name": pdf_path.name, "sha256": digest, "pages": total}, indent=2),
     )
+    if force:
+        clear_page_cache(cache_dir)
 
 
 def atomic_write(path: Path, text: str) -> None:
@@ -164,7 +177,8 @@ def main() -> int:
     parser.add_argument("--zoom", type=float, default=DEFAULT_ZOOM, help=f"render zoom (default: {DEFAULT_ZOOM})")
     parser.add_argument("--pause", type=float, default=DEFAULT_PAUSE, help=f"seconds between calls (default: {DEFAULT_PAUSE})")
     parser.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help=f"per-page retries (default: {DEFAULT_MAX_RETRIES})")
-    parser.add_argument("--force", action="store_true", help="re-transcribe every page, ignoring the cache")
+    parser.add_argument("--force", action="store_true",
+                        help="clear the cached pages and re-transcribe every page")
     args = parser.parse_args()
 
     load_dotenv(Path(__file__).resolve().with_name(".env"))
