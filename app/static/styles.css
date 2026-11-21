@@ -530,6 +530,25 @@ textarea:focus, select:focus { outline: none; border-color: var(--accent); box-s
   border-color: #26382F;
 }
 
+/* ---------------- evidence check ---------------- */
+
+.evidence-check {
+  margin-top: 12px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--danger-soft);
+}
+.evidence-check summary {
+  cursor: pointer; font-size: 13px; font-weight: 600; color: var(--danger);
+}
+.evidence-check .hint { margin: 8px 0 0; font-size: 11.5px; color: var(--muted); }
+.weak-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
+.weak-claim {
+  border-top: 1px solid var(--line); padding-top: 8px;
+  font-size: 12.5px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px;
+}
+.weak-sentence { color: var(--ink); }
+.weak-refs, .weak-uncited { color: var(--muted); font-size: 11.5px; }
+
 /* ---------------- document detail ---------------- */
 
 .file-detail {

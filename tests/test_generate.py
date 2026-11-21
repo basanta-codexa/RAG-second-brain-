@@ -7,6 +7,7 @@ from app.generate import (
     invalid_citations,
     is_refusal,
     pack_passages,
+    weak_claims,
 )
 
 
@@ -45,11 +46,32 @@ def test_invalid_citations():
     assert invalid_citations("ok [1], [0], [9]", 3) == [0, 9]
 
 
+def test_weak_claims_flags_low_overlap_with_cited_passage():
+    used = [{"text": "copper vault Oslo archives", "source": "notes.md", "page": 1}]
+    findings = weak_claims("The treasury holds a diamond mine in Peru [1].", used)
+    assert len(findings) == 1
+    assert findings[0]["citations"] == [1]
+    assert findings[0]["overlap"] < 0.15
+
+
+def test_weak_claims_accepts_a_grounded_sentence():
+    used = [{"text": "The copper vault is in Oslo, guarded by archivists.",
+             "source": "notes.md", "page": 1}]
+    assert weak_claims("The copper vault is in Oslo. [1]", used) == []
+
+
+def test_weak_claims_flags_uncited_sentences():
+    findings = weak_claims("The answer is definitely in the basement.", [])
+    assert len(findings) == 1
+    assert findings[0]["citations"] == []
+
+
 def test_answer_without_hits_refuses_locally():
     result = answer("anything", [])
     assert result["refused"] is True
     assert result["answer"] == FALLBACK_REFUSAL
     assert result["used"] == []
+    assert result["weak_claims"] == []
 
 
 def test_missing_key_is_a_503(monkeypatch):

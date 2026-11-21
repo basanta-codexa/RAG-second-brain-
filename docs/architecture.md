@@ -101,8 +101,9 @@ list. Model loading is lazy, so importing the package never downloads weights.
 - The directory token uses file size and mtime. Restoring files with preserved
   timestamps requires `--rebuild`.
 - The web app has no authentication and binds to localhost.
-- Citation checks detect out-of-range reference numbers only; answers are not
-  factually verified.
+- Citation checks detect out-of-range reference numbers and flag sentences with
+  low word overlap with their cited passages. The overlap check is a heuristic,
+  not entailment; answers are not factually verified.
 - Evaluation numbers were measured on an earlier 26-page version of the corpus;
   the source has since been expanded. Re-run `evaluate.py` on your own data.
 

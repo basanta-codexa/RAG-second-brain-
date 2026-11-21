@@ -185,8 +185,9 @@ Documents, chunks, and index state stay on this machine. Three exceptions:
 `docker-compose.yml` sets `QDRANT__TELEMETRY_DISABLED=true` and binds Qdrant's
 REST port to `127.0.0.1`. The web app has no authentication and binds to
 localhost; do not expose either service to a network unless you add
-authentication. Generated answers are not factually verified, and citation
-checks only catch reference numbers that were not sent to the model.
+authentication. Generated answers are not factually verified. The UI flags
+out-of-range citation numbers and sentences with little word overlap with their
+cited passages; that overlap check is a heuristic, not proof of support.
 
 ## Tests
 

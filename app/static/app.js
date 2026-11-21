@@ -59,6 +59,9 @@ const el = {
   copyAnswer: $('#copy-answer'),
   copyCitations: $('#copy-citations'),
   copyFeedback: $('#copy-feedback'),
+  evidenceCheck: $('#evidence-check'),
+  evidenceCheckSummary: $('#evidence-check-summary'),
+  weakList: $('#weak-list'),
 };
 
 const HINTS = [
@@ -146,6 +149,8 @@ function resetAnswer() {
   el.answerText.replaceChildren();
   el.answerModel.textContent = '';
   el.sentList.replaceChildren();
+  el.weakList.replaceChildren();
+  el.evidenceCheck.hidden = true;
 }
 function beginProgress() {
   el.questionForm.setAttribute('aria-busy', 'true');
@@ -688,14 +693,55 @@ function renderAnswer(payload) {
     el.sentList.appendChild(li);
   }
 
-  if (Array.isArray(payload.invalid_citations) && payload.invalid_citations.length) {
-    showNotice(el.askMsg,
-      `The model cited passage(s) ${payload.invalid_citations.map((n) => `[${n}]`).join(', ')} ` +
-      'that were not sent to it. Treat those claims as unsupported.', true);
-  } else if (Array.isArray(payload.warnings) && payload.warnings.length) {
-    showNotice(el.askMsg,
-      `${payload.warnings.length} file(s) could not be indexed; results use the last good version.`, true);
+  const weak = Array.isArray(payload.weak_claims) ? payload.weak_claims : [];
+  el.weakList.replaceChildren();
+  el.evidenceCheck.hidden = weak.length === 0;
+  el.evidenceCheckSummary.textContent =
+    `Evidence check · ${weak.length} sentence(s) to verify`;
+  for (const item of weak) {
+    const li = document.createElement('li');
+    li.className = 'weak-claim';
+    const sentence = document.createElement('span');
+    sentence.className = 'weak-sentence';
+    sentence.textContent = item.sentence;
+    li.append(sentence);
+
+    if (item.citations && item.citations.length) {
+      const note = document.createElement('span');
+      note.className = 'weak-refs';
+      note.textContent = `cites ${item.citations.map(n => `[${n}]`).join(', ')} · overlap ${item.overlap}`;
+      li.append(note);
+      for (const rank of item.citations) {
+        const chip = document.createElement('button');
+        chip.className = 'citation-chip';
+        chip.type = 'button';
+        chip.textContent = `[${rank}]`;
+        chip.title = `Jump to passage ${rank}`;
+        chip.addEventListener('click', () => highlightHit(rank));
+        li.append(chip);
+      }
+    } else {
+      const uncited = document.createElement('span');
+      uncited.className = 'weak-uncited';
+      uncited.textContent = 'no citation';
+      li.append(uncited);
+    }
+    el.weakList.appendChild(li);
   }
+
+  const notices = [];
+  if (weak.length) {
+    notices.push(`${weak.length} sentence(s) had little or no overlap with the cited passages — verify them below.`);
+  }
+  if (Array.isArray(payload.invalid_citations) && payload.invalid_citations.length) {
+    notices.push(
+      `The model cited passage(s) ${payload.invalid_citations.map(n => `[${n}]`).join(', ')} ` +
+      'that were not sent to it. Treat those claims as unsupported.');
+  }
+  if (Array.isArray(payload.warnings) && payload.warnings.length) {
+    notices.push(`${payload.warnings.length} file(s) could not be indexed; results use the last good version.`);
+  }
+  if (notices.length) showNotice(el.askMsg, notices.join(' '), true);
 }
 
 el.answerBtn.addEventListener('click', async () => {

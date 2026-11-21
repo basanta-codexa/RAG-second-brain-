@@ -51,6 +51,15 @@ Rules:
 
 FALLBACK_REFUSAL = "I don't know — the documents don't answer this."
 _CITATION_RE = re.compile(r"\[(\d{1,3})\]")
+_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+_CITATION_ONLY_RE = re.compile(r"(?:\[\d{1,3}\]\s*)+")
+# A flag, not a verdict: sentences sharing less than this fraction of their
+# content words with every cited passage are shown for manual verification.
+SUPPORT_OVERLAP_THRESHOLD = 0.15
+_STOPWORDS = frozenset(
+    "a an and are as at be by for from has have in is it its of on or that "
+    "the their this to was were which with".split()
+)
 
 
 class GenerationError(RuntimeError):
@@ -76,6 +85,53 @@ def invalid_citations(text: str, used_count: int) -> list[int]:
     """Citation numbers that do not refer to a passage actually sent."""
     cited = {int(n) for n in _CITATION_RE.findall(text)}
     return sorted(n for n in cited if n < 1 or n > used_count)
+
+
+def _content_words(text: str) -> set[str]:
+    return {
+        word for word in re.findall(r"[a-z0-9]+", text.lower())
+        if len(word) > 2 and word not in _STOPWORDS
+    }
+
+
+def weak_claims(text: str, used: list[dict]) -> list[dict]:
+    """Sentences whose cited passages share little vocabulary with them.
+
+    This is a lexical heuristic, not entailment. It finds claims worth checking
+    and flags uncited sentences; it cannot prove that a claim is supported.
+    """
+    findings: list[dict] = []
+    sentences: list[str] = []
+    for part in _SENTENCE_RE.split(text):
+        part = part.strip()
+        if not part:
+            continue
+        # "Sentence. [1]" must stay one sentence: the citation belongs to it.
+        if sentences and _CITATION_ONLY_RE.fullmatch(part):
+            sentences[-1] += f" {part}"
+        else:
+            sentences.append(part)
+
+    for sentence in sentences:
+        words = _content_words(_CITATION_RE.sub("", sentence))
+        if len(sentence) < 12 or len(words) < 3:
+            continue
+        cited = [int(n) for n in _CITATION_RE.findall(sentence)]
+        if not cited:
+            findings.append({"sentence": sentence, "citations": [], "overlap": 0.0})
+            continue
+        scores = []
+        for rank in cited:
+            passage = used[rank - 1]["text"] if 1 <= rank <= len(used) else ""
+            scores.append(len(words & _content_words(passage)) / len(words))
+        best = round(max(scores, default=0.0), 3)
+        if best < SUPPORT_OVERLAP_THRESHOLD:
+            findings.append({
+                "sentence": sentence,
+                "citations": cited,
+                "overlap": best,
+            })
+    return findings
 
 
 def pack_passages(hits: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -112,6 +168,7 @@ def answer(question: str, hits: list[dict], model: str | None = None) -> dict:
             "used": [],
             "refused": True,
             "invalid_citations": [],
+            "weak_claims": [],
         }
 
     if not os.environ.get("GROQ_API_KEY"):
@@ -153,6 +210,7 @@ def answer(question: str, hits: list[dict], model: str | None = None) -> dict:
         raise GenerationError("Groq returned an empty answer.")
 
     invalid = invalid_citations(text, len(used))
+    weak = [] if is_refusal(text) else weak_claims(text, used)
     sent = [
         {"rank": h["rank"], "source": h["source"], "page": h["page"],
          "score": round(h["score"], 4), "chars": min(len(h["text"]), MAX_PASSAGE_CHARS)}
@@ -165,4 +223,5 @@ def answer(question: str, hits: list[dict], model: str | None = None) -> dict:
         "used": used,                    # callers must only expose these as evidence
         "refused": is_refusal(text),
         "invalid_citations": invalid,    # hallucinated [n] references
+        "weak_claims": weak,             # sentences to verify against evidence
     }

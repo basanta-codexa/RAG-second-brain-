@@ -229,6 +229,33 @@ def test_answer_success_with_mocked_provider(monkeypatch, client):
     assert body["hits"][0]["rank"] == 1
 
 
+def test_answer_exposes_weak_claims_to_the_ui(monkeypatch, client):
+    client.post("/api/upload",
+                files={"file": ("notes.txt", b"copper vault Oslo archives", "text/plain")})
+    fake_hits = _fake_hits()
+    monkeypatch.setattr("app.main.srch.create_index", lambda *a, **kw: _fake_index(fake_hits))
+    monkeypatch.setattr("app.main.srch.query_index", lambda *a, **kw: fake_hits)
+    flagged = [{
+        "sentence": "A diamond mine is in Peru [1].",
+        "citations": [1],
+        "overlap": 0.0,
+    }]
+    monkeypatch.setattr("app.main.generate.answer", lambda question, hits, model=None: {
+        "answer": flagged[0]["sentence"],
+        "model": "mock-model",
+        "sent": [{"rank": 1, "source": "notes.txt", "page": 1, "score": 0.91, "chars": 30}],
+        "used": [{**fake_hits[0], "rank": 1}],
+        "refused": False,
+        "invalid_citations": [],
+        "weak_claims": flagged,
+    })
+
+    body = client.post("/api/answer",
+                       json={"question": "where is the mine", "top_k": 1, "consent": True}).json()
+
+    assert body["weak_claims"] == flagged
+
+
 def test_answer_only_returns_passages_that_were_sent(monkeypatch, client):
     client.post("/api/upload", files={"file": ("notes.txt", b"alpha beta gamma", "text/plain")})
     hits = [
