@@ -6,18 +6,22 @@ product surfaces that need their own infrastructure.
 
 ## Active work
 
-Items from `improvement.md` that are in scope:
+Ordered by the current plan. Effort is relative, not a commitment.
 
-- **UI/UX**: dashboard, search history, chat with conversation memory,
-  citation side panel, settings page, better indexing progress, source
-  inspection, multi-file upload.
-- **Document management**: detail/preview, duplicate detection, per-file
-  processing status, manual re-index, manual tags/metadata.
-- **Retrieval**: token-aware chunking, metadata filtering, context-aware
-  retrieval, context compression, better citation validation, reranking
-  evaluation.
-- **Ingestion**: HTML, CSV, generic image OCR through the existing
-  transcription path.
+| Item | Priority | Effort |
+| --- | --- | --- |
+| Professional UI redesign | Very high | Medium |
+| Document library and management | Very high | Medium |
+| PDF/document preview | High | Medium |
+| Search and evidence workspace | Very high | Medium |
+| Conversation history | High | Medium |
+| Better citation handling | Very high | Medium |
+| Improved error/loading states | High | Low |
+| Token-aware chunking experiments | High | Medium |
+| Better retrieval evaluation | Very high | Medium |
+
+The small, low-effort items are done first so the higher-priority redesign work
+starts from a stable UI.
 
 ## Deferred — non-goals for now
 

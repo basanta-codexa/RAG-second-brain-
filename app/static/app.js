@@ -83,6 +83,25 @@ function showNotice(target, text, isError = false) {
 }
 const clearNotice = (target) => { target.hidden = true; target.textContent = ''; };
 
+const emptyTitle = $('.empty-title');
+const emptyBody = $('.empty-body');
+const emptyDefaults = {
+  title: emptyTitle ? emptyTitle.textContent : '',
+  body: emptyBody ? emptyBody.textContent : '',
+};
+function showEmptyState(title, body) {
+  if (emptyTitle) emptyTitle.textContent = title;
+  if (emptyBody) emptyBody.textContent = body;
+  el.emptyState.hidden = false;
+}
+function resetEmptyState() {
+  showEmptyState(emptyDefaults.title, emptyDefaults.body);
+}
+const networkMessage = (err) =>
+  /fetch|network|failed/i.test(String(err && err.message || err))
+    ? 'Cannot reach the server. Check that the app is running.'
+    : String(err && err.message || err || 'Request failed.');
+
 const isEditable = (t) =>
   t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
 
@@ -129,6 +148,7 @@ function resetAnswer() {
   el.sentList.replaceChildren();
 }
 function beginProgress() {
+  el.questionForm.setAttribute('aria-busy', 'true');
   el.progressPanel.hidden = false;
   el.skeleton.hidden = false;
   el.results.replaceChildren();
@@ -154,6 +174,7 @@ function beginProgress() {
 }
 function endProgress() {
   clearInterval(elapsedTimer); clearInterval(hintTimer); clearInterval(pollTimer);
+  el.questionForm.removeAttribute('aria-busy');
   el.progressPanel.hidden = true;
   el.skeleton.hidden = true;
 }
@@ -382,6 +403,7 @@ el.dropzone.addEventListener('submit', async (event) => {
     return;
   }
   clearNotice(el.uploadMsg);
+  el.dropzone.setAttribute('aria-busy', 'true');
   el.uploadBtn.disabled = true;
   el.uploadBtn.textContent = 'Saving…';
   setBusy('busy', 'Saving file…', 'Saving…');
@@ -405,6 +427,7 @@ el.dropzone.addEventListener('submit', async (event) => {
   } finally {
     el.uploadBtn.disabled = false;
     el.uploadBtn.textContent = 'Save & index';
+    el.dropzone.removeAttribute('aria-busy');
     await refreshStatus();
   }
 });
@@ -435,6 +458,11 @@ const queryBody = (question) => ({
 
 function renderHits(hits) {
   el.results.replaceChildren();
+  if (!hits.length) {
+    showEmptyState('No matching passages',
+      'Try different wording, more passages, or a different source filter.');
+    return;
+  }
   el.emptyState.hidden = true;
   for (const hit of hits) {
     const node = el.hitTemplate.content.cloneNode(true);
@@ -473,14 +501,25 @@ async function requestJson(url, body) {
   return { res, payload };
 }
 
-async function handleQueryError(res, payload, noticeTarget) {
-  el.emptyState.hidden = false;
+function handleQueryError(res, payload, noticeTarget) {
+  resetEmptyState();
+  el.results.replaceChildren();
+  const detail = payload.detail || '';
   if (res.status === 409) {
-    el.results.replaceChildren();
-    showNotice(noticeTarget, payload.detail || 'No documents yet.', true);
-    return;
+    showNotice(noticeTarget,
+      'No documents yet — upload a file on the left or add one to data/.', false);
+  } else if (res.status === 503 && /lock|sync|busy|another index/i.test(detail)) {
+    showNotice(noticeTarget,
+      'Another index sync is running — retry in a few seconds.', false);
+  } else if (res.status === 503 && /qdrant|not reachable/i.test(detail)) {
+    showNotice(noticeTarget,
+      'Qdrant is not reachable. Start it with "docker compose up -d", then retry.', true);
+  } else if (res.status === 429) {
+    showNotice(noticeTarget,
+      'The answer provider is rate-limiting requests. Wait a moment and retry.', true);
+  } else {
+    showNotice(noticeTarget, detail || `Request failed (${res.status}).`, true);
   }
-  throw new Error(payload.detail || `request failed (${res.status})`);
 }
 
 el.questionForm.addEventListener('submit', async (event) => {
@@ -501,7 +540,7 @@ el.questionForm.addEventListener('submit', async (event) => {
 
   try {
     const { res, payload } = await requestJson('/api/search', queryBody(question));
-    if (!res.ok) await handleQueryError(res, payload, el.askMsg);
+    if (!res.ok) handleQueryError(res, payload, el.askMsg);
     else {
       renderHits(payload.hits);
       const warned = Array.isArray(payload.warnings) && payload.warnings.length
@@ -513,8 +552,8 @@ el.questionForm.addEventListener('submit', async (event) => {
         warned !== '');
     }
   } catch (err) {
-    el.emptyState.hidden = false;
-    showNotice(el.askMsg, err.message || 'Search failed.', true);
+    resetEmptyState();
+    showNotice(el.askMsg, networkMessage(err), true);
   } finally {
     state.busy = false;
     endProgress();
@@ -661,11 +700,11 @@ el.answerBtn.addEventListener('click', async () => {
 
   try {
     const { res, payload } = await requestJson('/api/answer', { ...queryBody(question), consent: true });
-    if (!res.ok) await handleQueryError(res, payload, el.askMsg);
+    if (!res.ok) handleQueryError(res, payload, el.askMsg);
     else renderAnswer(payload);
   } catch (err) {
-    el.emptyState.hidden = false;
-    showNotice(el.askMsg, err.message || 'Could not generate an answer.', true);
+    resetEmptyState();
+    showNotice(el.askMsg, networkMessage(err), true);
   } finally {
     state.busy = false;
     endProgress();

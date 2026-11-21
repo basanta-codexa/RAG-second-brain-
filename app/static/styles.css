@@ -243,6 +243,7 @@ textarea:focus, select:focus { outline: none; border-color: var(--accent); box-s
   border: 1px solid #d3dfda;
 }
 .notice.error { background: var(--danger-soft); border-color: #e3cbc5; color: var(--danger); }
+[aria-busy="true"] .btn[disabled] { cursor: progress; opacity: .75; }
 
 /* ---------------- results ---------------- */
 
