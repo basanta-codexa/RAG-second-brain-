@@ -121,7 +121,10 @@ python evaluate.py --k 3 --fail-under 0.8
 
 `--fail-under` checks the strict subset when one exists. Strict cases require
 the correct page in a multi-page source; lenient cases accept any page from the
-source or come from a single-page source.
+source or come from a single-page source. `--json report.json` writes a
+machine-readable report with the configuration, counts, metrics (including
+95% Wilson confidence intervals for hit@k), skips and misses. Save it alongside
+results so runs can be compared.
 
 | Metric | Definition |
 | --- | --- |

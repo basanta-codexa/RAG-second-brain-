@@ -12,6 +12,8 @@ Honesty rules baked into this script:
 from __future__ import annotations
 
 import argparse
+import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -54,6 +56,17 @@ def find_rank(results, answers) -> int | None:
     return None
 
 
+def _wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """95% Wilson interval for a proportion; well behaved for small n."""
+    if n == 0:
+        return (0.0, 0.0)
+    p = k / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return (max(0.0, centre - margin), min(1.0, centre + margin))
+
+
 def compute_metrics(ranks: list[int | None], top_k: int) -> dict:
     """Pure metric calculation; ranks are 1-based and already within top_k."""
     n = len(ranks)
@@ -67,6 +80,7 @@ def compute_metrics(ranks: list[int | None], top_k: int) -> dict:
         "mrr": reciprocal / n if n else 0.0,
         "hit1_rate": hit1 / n if n else 0.0,
         "hitk_rate": hitk / n if n else 0.0,
+        "hitk_ci95": list(_wilson(hitk, n)),
     }
 
 
@@ -84,7 +98,8 @@ def evaluate(folder: str, top_k: int, model_name: str,
              hybrid: bool = False, rerank: bool = False,
              hybrid_rerank: bool = False,
              fail_under: float = 0.0,
-             reranker_model: str | None = None) -> int:
+             reranker_model: str | None = None,
+             json_path: str | None = None) -> int:
     validate_tests(TESTS)
     if hybrid_rerank:
         hybrid = rerank = True
@@ -138,10 +153,14 @@ def evaluate(folder: str, top_k: int, model_name: str,
     overall = compute_metrics(ranks, top_k)
     strict = compute_metrics(strict_ranks, top_k)
     print(f"overall: hit@1: {overall['hit1']}/{overall['n']}   "
-          f"hit@{top_k}: {overall['hitk']}/{overall['n']}   MRR: {overall['mrr']:.3f}")
+          f"hit@{top_k}: {overall['hitk']}/{overall['n']} "
+          f"(95% CI {overall['hitk_ci95'][0]:.3f}-{overall['hitk_ci95'][1]:.3f})   "
+          f"MRR: {overall['mrr']:.3f}")
     if strict["n"]:
         print(f"strict:  hit@1: {strict['hit1']}/{strict['n']}   "
-              f"hit@{top_k}: {strict['hitk']}/{strict['n']}   MRR: {strict['mrr']:.3f}")
+              f"hit@{top_k}: {strict['hitk']}/{strict['n']} "
+              f"(95% CI {strict['hitk_ci95'][0]:.3f}-{strict['hitk_ci95'][1]:.3f})   "
+              f"MRR: {strict['mrr']:.3f}")
     print(f"lenient tests (any page, or a single-page source): {len(lenient_tests)}")
     print(f"strict tests (page-specific, multi-page sources): {len(strict_tests)}\n")
 
@@ -158,6 +177,37 @@ def evaluate(folder: str, top_k: int, model_name: str,
         print("Expected:", t["answers"])
         for rank, r in enumerate(results, 1):
             print(f"  #{rank} {r['score']:.3f} [{r['source']} | p{r['page']}] {r['text'][:150]}...")
+
+    if json_path:
+        report = {
+            "config": {
+                "folder": folder,
+                "k": top_k,
+                "model": model_name,
+                "reranker": reranker_model or srch.RERANK_MODEL,
+                "chunk_size": chunk_size,
+                "overlap": overlap,
+                "rebuild": rebuild,
+                "mode": mode,
+            },
+            "counts": {
+                "total": len(TESTS),
+                "evaluated": len(evaluated),
+                "skipped": len(skipped),
+                "strict": len(strict_tests),
+                "lenient": len(lenient_tests),
+            },
+            "overall": overall,
+            "strict": strict,
+            "skipped_questions": [t["q"] for t, _ in skipped],
+            "misses": [{"question": t["q"], "expected": t["answers"]}
+                       for t, _ in misses],
+            "index_errors": list(index.get("errors", [])),
+        }
+        out = Path(json_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print(f"wrote {out}")
 
     # Gate on the strict subset when it exists; the lenient-inclusive overall
     # rate can pass while page-specific retrieval is failing.
@@ -192,12 +242,14 @@ def main() -> int:
     parser.add_argument("--fail-under", type=float, default=0.0,
                         help="exit 1 when hit@k is below this rate "
                              "(strict subset when available; 0 disables)")
+    parser.add_argument("--json", metavar="PATH", default=None,
+                        help="write a machine-readable report with config and metrics")
     args = parser.parse_args()
     try:
         return evaluate(args.folder, args.k, args.model, args.chunk_size, args.overlap,
                         args.rebuild, hybrid=args.hybrid, rerank=args.rerank,
                         hybrid_rerank=args.hybrid_rerank, fail_under=args.fail_under,
-                        reranker_model=args.reranker)
+                        reranker_model=args.reranker, json_path=args.json)
     except (RuntimeError, ValueError, FileNotFoundError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

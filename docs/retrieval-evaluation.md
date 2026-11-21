@@ -107,5 +107,9 @@ python evaluate.py --k 3 --hybrid-rerank
 python evaluate.py --k 3 --rerank --reranker BAAI/bge-reranker-base
 ```
 
+Save each run with `--json PATH`; the report records the exact configuration
+and a 95% Wilson interval for hit@k. With 45 cases those intervals are wide, so
+a one-case difference is not reliable evidence that a mode is better.
+
 The corpus, Qdrant snapshot, and model cache are not shipped with the repo, so
 these commands reproduce the method, not the author's exact numbers.
