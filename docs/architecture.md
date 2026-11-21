@@ -71,7 +71,8 @@ fetching every vector and payload from Qdrant. Per-source views are cached
 separately so IDF is computed over the rows actually searched.
 
 The web app keeps one index per process. Its cache key is the corpus directory
-token (name, size, mtime for each file), model, and chunk configuration.
+token (name, size, mtime for each file), model, and chunk configuration. A sync
+that reports file errors is not cached, so the next request retries it.
 `state_lock` serializes index syncs with uploads, deletes, and clears, so a
 query cannot observe a directory mid-update.
 

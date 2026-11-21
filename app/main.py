@@ -202,14 +202,22 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
         key = current_cache_key()
         synced_now = index_cache["key"] != key
         if synced_now:
-            index_cache["index"] = srch.create_index(
+            index = srch.create_index(
                 [str(data_path), str(upload_path)], model, chunk_size, overlap,
                 reranker_model=reranker,
             )
-            index_cache["key"] = key
-            logger.info("index synced: %d chunks from %d document(s)",
-                        len(index_cache["index"]["chunks"]),
-                        len(corpus["base"]) + len(corpus["uploads"]))
+            index_cache["index"] = index
+            # A sync with file errors is not a stable state: keep the key unset
+            # so the next request retries instead of caching a partial index.
+            cacheable = not index.get("errors")
+            index_cache["key"] = key if cacheable else None
+            if not cacheable:
+                logger.warning("index sync reported %d file error(s); retrying on next request",
+                               len(index["errors"]))
+            else:
+                logger.info("index synced: %d chunks from %d document(s)",
+                            len(index["chunks"]),
+                            len(corpus["base"]) + len(corpus["uploads"]))
         return corpus, index_cache["index"], synced_now
 
     def run_search(question: str, top_k: int, mode: Mode, source: str | None

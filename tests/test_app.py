@@ -271,3 +271,41 @@ def test_index_errors_are_returned_as_warnings(monkeypatch, client):
     monkeypatch.setattr("app.main.srch.query_index", lambda *a, **kw: _fake_hits())
     body = client.post("/api/search", json={"question": "hello there"}).json()
     assert body["warnings"] == errors
+
+
+def test_failed_index_sync_is_retried_on_the_next_request(monkeypatch, client):
+    client.post("/api/upload", files={"file": ("notes.txt", b"alpha beta gamma", "text/plain")})
+    errors = [{"file": "notes.txt", "error": "transient encoder failure"}]
+    calls = []
+
+    def fake_create(*args, **kwargs):
+        calls.append(1)
+        return _fake_index(errors=errors)
+
+    monkeypatch.setattr("app.main.srch.create_index", fake_create)
+    monkeypatch.setattr("app.main.srch.query_index", lambda *a, **kw: _fake_hits())
+
+    for _ in range(3):
+        body = client.post("/api/search", json={"question": "hello there"}).json()
+        assert body["warnings"] == errors
+        assert body["cached_index"] is False
+
+    assert len(calls) == 3  # an error is not a stable cache state
+
+
+def test_successful_index_sync_is_cached(monkeypatch, client):
+    client.post("/api/upload", files={"file": ("notes.txt", b"alpha beta gamma", "text/plain")})
+    calls = []
+
+    def fake_create(*args, **kwargs):
+        calls.append(1)
+        return _fake_index()
+
+    monkeypatch.setattr("app.main.srch.create_index", fake_create)
+    monkeypatch.setattr("app.main.srch.query_index", lambda *a, **kw: _fake_hits())
+
+    first = client.post("/api/search", json={"question": "hello there"}).json()
+    second = client.post("/api/search", json={"question": "hello there"}).json()
+    assert first["cached_index"] is False
+    assert second["cached_index"] is True
+    assert len(calls) == 1
