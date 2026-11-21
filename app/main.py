@@ -18,6 +18,7 @@ Configuration (environment variables):
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import os
@@ -25,6 +26,7 @@ import re
 import tempfile
 import threading
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -140,7 +142,7 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
     encoder_lock = threading.Lock()
     encoder_cache: dict = {"instance": None}
     state_lock = threading.Lock()
-    index_cache: dict = {"key": None, "index": None}
+    index_cache: dict = {"key": None, "index": None, "encoder": None}
 
     def get_encoder():
         with encoder_lock:
@@ -151,7 +153,17 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
     data_path.mkdir(parents=True, exist_ok=True)
     upload_path.mkdir(parents=True, exist_ok=True)
 
-    app = FastAPI(title="Second Brain — test bench", version="2.0.0")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Torch + model loading costs ~25 s on a cold process. Do it while the
+        # app boots rather than on the user's first question.
+        if importlib.util.find_spec("sentence_transformers") is not None:
+            threading.Thread(target=get_encoder, daemon=True,
+                             name="encoder-warmup").start()
+        yield
+
+    app = FastAPI(title="Second Brain — test bench", version="2.0.0",
+                  lifespan=lifespan)
 
     @app.middleware("http")
     async def log_requests(request, call_next):
@@ -240,7 +252,11 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             index = srch.create_index(
                 [str(data_path), str(upload_path)], model, chunk_size, overlap,
                 reranker_model=reranker, lock_timeout=WEB_LOCK_TIMEOUT,
+                encoder=index_cache["encoder"],
             )
+            # create_index returns the encoder it used; reuse it on the next
+            # sync instead of loading the model a second time per request.
+            index_cache["encoder"] = index.get("encoder")
             index_cache["index"] = index
             # A sync with file errors is not a stable state: keep the key unset
             # so the next request retries instead of caching a partial index.

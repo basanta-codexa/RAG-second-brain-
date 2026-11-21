@@ -92,7 +92,10 @@ deleted upload's chunks do not linger until the next sync.
 
 Environment variables, with a `.env` file loaded explicitly by the CLI, web
 app, evaluation script, and transcription script. See the README for the full
-list. Model loading is lazy, so importing the package never downloads weights.
+list. Model loading is lazy at import time, so importing the package never
+downloads weights. The web app warms the encoder in a background thread at
+startup, and cached models load with `local_files_only=True` to avoid slow Hub
+checks.
 
 ## Design limits
 

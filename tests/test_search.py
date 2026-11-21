@@ -1,4 +1,5 @@
 import sys
+import types
 
 import numpy as np
 
@@ -235,3 +236,32 @@ def test_cli_uses_documented_environment_defaults(monkeypatch):
         "overlap": 45,
         "reranker": "env/reranker",
     }
+
+
+def _fake_transformers(monkeypatch, fail_local=False):
+    calls = []
+
+    class FakeModel:
+        def __init__(self, name, **kwargs):
+            calls.append(kwargs.get("local_files_only"))
+            if fail_local and kwargs.get("local_files_only"):
+                raise RuntimeError("not cached")
+
+    fake = types.ModuleType("sentence_transformers")
+    fake.SentenceTransformer = FakeModel
+    fake.CrossEncoder = FakeModel
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake)
+    return calls
+
+
+def test_model_loaders_prefer_cached_files(monkeypatch):
+    calls = _fake_transformers(monkeypatch)
+    search.load_encoder("m")
+    search.load_reranker()
+    assert calls == [True, True]
+
+
+def test_model_loaders_fall_back_to_a_download(monkeypatch):
+    calls = _fake_transformers(monkeypatch, fail_local=True)
+    search.load_encoder("m")
+    assert calls == [True, None]

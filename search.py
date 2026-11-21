@@ -53,13 +53,22 @@ BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 def load_encoder(model_name: str) -> SentenceTransformer:
     from sentence_transformers import SentenceTransformer
 
-    return SentenceTransformer(model_name)
+    # A cached model must not trigger HF Hub checks: on this machine that costs
+    # ~200s per load. Fall back to a normal load only when nothing is cached.
+    try:
+        return SentenceTransformer(model_name, local_files_only=True)
+    except Exception:
+        return SentenceTransformer(model_name)
 
 
 def load_reranker(model_name: str | None = None) -> CrossEncoder:
     from sentence_transformers import CrossEncoder
 
-    return CrossEncoder(model_name or RERANK_MODEL)
+    name = model_name or RERANK_MODEL
+    try:
+        return CrossEncoder(name, local_files_only=True)
+    except Exception:
+        return CrossEncoder(name)
 
 
 def _tokenize(text: str) -> list[str]:
