@@ -169,7 +169,7 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
                              name="encoder-warmup").start()
         yield
 
-    app = FastAPI(title="Second Brain — test bench", version="2.0.0",
+    app = FastAPI(title="Second Brain — Knowledge Workspace", version="2.0.0",
                   lifespan=lifespan)
 
     @app.middleware("http")
