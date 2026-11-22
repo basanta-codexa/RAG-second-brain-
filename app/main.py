@@ -32,7 +32,7 @@ from typing import Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from filelock import Timeout
 from pydantic import BaseModel, Field, field_validator
@@ -396,6 +396,41 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             "indexed": any(c.get("origin") == origin for c in cached.get("chunks", [])),
             "index_errors": [e for e in cached.get("errors", []) if e.get("file") == origin],
         }
+
+    @app.get("/api/documents/{folder}/{name}/pages/{page}")
+    def document_page(folder: str, name: str, page: int) -> Response:
+        """Render one PDF page as PNG for the detail dialog."""
+        if folder == data_path.name:
+            base = data_path
+        elif folder == upload_path.name:
+            base = upload_path
+        else:
+            raise HTTPException(status_code=404, detail=f"unknown folder: {folder}")
+        if Path(name).name != name or page < 1:
+            raise HTTPException(status_code=400, detail="invalid document or page number")
+        target = base / name
+        if not target.is_file() or target.suffix.lower() != ".pdf":
+            raise HTTPException(status_code=404,
+                                detail="page previews are available for PDFs only")
+
+        try:
+            import pymupdf as fitz
+
+            with fitz.open(str(target)) as doc:
+                if page > len(doc):
+                    raise HTTPException(status_code=404,
+                                        detail=f"document has {len(doc)} page(s)")
+                pix = doc.load_page(page - 1).get_pixmap(
+                    matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+                png = pix.tobytes("png")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=422,
+                                detail=f"could not render page: {exc}") from exc
+
+        return Response(content=png, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=3600"})
 
     @app.get("/api/index-status")
     def index_status() -> dict:

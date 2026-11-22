@@ -419,6 +419,27 @@ def test_document_detail_rejects_unknown_folder_and_traversal(client):
     assert client.get("/api/documents/data/..%2Fsecrets.md").status_code in (400, 404)
 
 
+def test_pdf_page_preview_renders_png(client):
+    import pymupdf
+
+    data_dir = Path(client.app.state.data_dir)
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "hello preview")
+    doc.save(str(data_dir / "preview.pdf"))
+    doc.close()
+
+    res = client.get("/api/documents/data/preview.pdf/pages/1")
+
+    assert res.status_code == 200
+    assert res.headers["content-type"] == "image/png"
+    assert res.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_pdf_page_preview_rejects_invalid_input(client):
+    assert client.get("/api/documents/data/nope.pdf/pages/0").status_code == 400
+    assert client.get("/api/documents/data/nope.pdf/pages/1").status_code == 404
+
+
 def test_busy_index_returns_409(monkeypatch, client):
     client.post("/api/upload", files={"file": ("notes.txt", b"alpha beta gamma", "text/plain")})
 

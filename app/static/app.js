@@ -31,6 +31,11 @@ const el = {
   docFacts: $('#doc-facts'),
   docPreview: $('#doc-preview'),
   docDialogError: $('#doc-dialog-error'),
+  docPagePreview: $('#doc-page-preview'),
+  docPagePrev: $('#doc-page-prev'),
+  docPageNext: $('#doc-page-next'),
+  docPageLabel: $('#doc-page-label'),
+  docPageImage: $('#doc-page-image'),
 
   questionForm: $('#question-form'),
   question: $('#question'),
@@ -350,10 +355,30 @@ function renderFileList(list, files, removable, folder) {
   }
 }
 
+let pagePreview = { folder: '', name: '', page: 1, total: 0 };
+
+function renderDocPage() {
+  const p = pagePreview;
+  el.docPageLabel.textContent = `Page ${p.page} of ${p.total}`;
+  el.docPagePrev.disabled = p.page <= 1;
+  el.docPageNext.disabled = p.page >= p.total;
+  el.docPageImage.src = `/api/documents/${encodeURIComponent(p.folder)}/`
+    + `${encodeURIComponent(p.name)}/pages/${p.page}`;
+}
+
+el.docPagePrev.addEventListener('click', () => {
+  if (pagePreview.page > 1) { pagePreview.page -= 1; renderDocPage(); }
+});
+el.docPageNext.addEventListener('click', () => {
+  if (pagePreview.page < pagePreview.total) { pagePreview.page += 1; renderDocPage(); }
+});
+
 async function openDocumentDetail(folder, name) {
   clearNotice(el.docDialogError);
   el.docDialogTitle.textContent = name;
   el.docFacts.replaceChildren();
+  el.docPagePreview.hidden = true;
+  el.docPageImage.removeAttribute('src');
   el.docPreview.textContent = 'Loading…';
   if (typeof el.docDialog.showModal === 'function') el.docDialog.showModal();
   else el.docDialog.setAttribute('open', '');
@@ -383,6 +408,12 @@ async function openDocumentDetail(folder, name) {
       el.docFacts.append(dt, dd);
     }
     el.docPreview.textContent = body.preview || '(no extracted text)';
+    const isPdf = name.toLowerCase().endsWith('.pdf');
+    el.docPagePreview.hidden = !isPdf;
+    if (isPdf) {
+      pagePreview = { folder, name, page: 1, total: Math.max(1, body.pages || 0) };
+      renderDocPage();
+    }
     const errors = body.index_errors || [];
     if (errors.length) {
       showNotice(el.docDialogError, `Indexing errors: ${errors.map(e => e.error).join('; ')}`, true);

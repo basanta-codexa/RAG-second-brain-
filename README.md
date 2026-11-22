@@ -42,7 +42,7 @@ The workbench shows the corpus and the question form. You can drop several
 files at once. Search returns ranked passages with source and page. Click
 **Details** on any file to see its page
 and chunk counts, SHA-256, byte-identical duplicates, index status and a short
-extracted-text preview. No answer is generated unless the consent switch is
+extracted-text preview. PDFs also get page-by-page image previews. No answer is generated unless the consent switch is
 enabled. When one is generated, the answer and its supporting passages appear
 side by side; citation chips jump to the matching passage. Recent questions
 appear as chips you can click to run again.
@@ -188,6 +188,7 @@ Interactive documentation is served at `/docs` while the app is running.
 | --- | --- | --- |
 | `GET` | `/api/status` | Corpus, sources, model, upload limit |
 | `GET` | `/api/documents/{folder}/{name}` | Inspect one document: pages, chunks, preview |
+| `GET` | `/api/documents/{folder}/{name}/pages/{page}` | Render one PDF page as PNG |
 | `GET` | `/api/index-status` | Indexing progress |
 | `POST` | `/api/upload` | Upload one or more documents |
 | `DELETE` | `/api/uploads/{name}` | Remove one upload |

@@ -255,6 +255,14 @@
         <button class="btn btn-ghost" id="doc-dialog-close" type="button">Close</button>
       </div>
       <dl id="doc-facts" class="doc-facts"></dl>
+      <div id="doc-page-preview" class="doc-page-preview" hidden>
+        <div class="doc-page-head">
+          <button class="btn btn-ghost" id="doc-page-prev" type="button">Previous</button>
+          <span id="doc-page-label" class="mono"></span>
+          <button class="btn btn-ghost" id="doc-page-next" type="button">Next</button>
+        </div>
+        <img id="doc-page-image" alt="Rendered PDF page" />
+      </div>
       <h3>Extracted text preview</h3>
       <pre id="doc-preview" class="doc-preview"></pre>
       <p id="doc-dialog-error" class="notice" role="alert" hidden></p>
