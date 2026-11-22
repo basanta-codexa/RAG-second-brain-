@@ -157,6 +157,18 @@ def plan(files: dict[str, str], state: dict | None,
     }
 
 
+def load_state_file(state_path: Path | None = None) -> dict | None:
+    """Read and validate state without constructing a Store (no network)."""
+    path = Path(state_path) if state_path is not None else STATE_PATH
+    if not path.exists():
+        return None
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return state if _valid_state(state) else None
+
+
 class Store:
     """Thin wrapper around QdrantClient with file-change planning built in."""
 
@@ -223,13 +235,7 @@ class Store:
     # ---------- state ----------
 
     def load_state(self) -> dict | None:
-        if not self.state_path.exists():
-            return None
-        try:
-            state = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return None
-        return state if _valid_state(state) else None
+        return load_state_file(self.state_path)
 
     def save_state(self, state: dict) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
