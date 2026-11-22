@@ -665,6 +665,8 @@ textarea:focus, select:focus { outline: none; border-color: var(--accent); box-s
   white-space: pre-wrap; overflow-wrap: anywhere;
   max-height: 300px; overflow: auto; font-size: 12.5px;
 }
+.collection-filter { margin-bottom: 14px; }
+.collection-editor { margin-bottom: 12px; }
 .doc-tag-editor { margin-top: 14px; }
 .tag-list { display: flex; flex-wrap: wrap; gap: 6px; min-height: 20px; }
 .tag-chip {

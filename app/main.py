@@ -41,7 +41,15 @@ import search as srch
 from app import generate
 from chunker import chunk_records
 from loader import SUPPORTED_SUFFIXES, load_pdf, load_text
-from metadata import TAGS_PATH, load_tags, normalize_tags, save_tags
+from metadata import (
+    COLLECTIONS_PATH,
+    TAGS_PATH,
+    load_collections,
+    load_tags,
+    normalize_tags,
+    save_collections,
+    save_tags,
+)
 from qdrant_store import Store, StoreUnavailable, load_state_file, sha256_file
 
 logger = logging.getLogger(__name__)
@@ -87,6 +95,10 @@ class AnswerRequest(SearchRequest):
 
 class TagsRequest(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=12)
+
+
+class CollectionRequest(BaseModel):
+    collection: str | None = None
 
 
 def sanitize_filename(raw: str) -> str:
@@ -145,6 +157,7 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
     chunk_size = int(chunk_size or os.getenv("SECOND_BRAIN_CHUNK_SIZE", srch.DEFAULT_CHUNK_SIZE))
     overlap = int(overlap or os.getenv("SECOND_BRAIN_OVERLAP", srch.DEFAULT_OVERLAP))
     tags_path = Path(os.getenv("SECOND_BRAIN_TAGS", str(TAGS_PATH)))
+    collections_path = Path(os.getenv("SECOND_BRAIN_COLLECTIONS", str(COLLECTIONS_PATH)))
     chunk_mode = chunk_mode or os.getenv("SECOND_BRAIN_CHUNK_MODE", srch.DEFAULT_CHUNK_MODE)
     token_size = int(token_size or os.getenv("SECOND_BRAIN_TOKEN_SIZE", srch.DEFAULT_TOKEN_SIZE))
     token_overlap = int(
@@ -351,6 +364,7 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             "max_mb": max_bytes // (1024 * 1024),
             "max_upload_bytes": max_bytes,
             "sources": sources,
+            "collections": load_collections(collections_path),
         }
 
     @app.get("/api/documents/{folder}/{name}")
@@ -377,6 +391,7 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
 
         origin = f"{folder}/{name}"
         tags = load_tags(tags_path).get(origin, [])
+        collection = load_collections(collections_path).get(origin)
         cached = index_cache["index"] or {}
         state_entry = (load_state_file() or {}).get("files", {}).get(origin)
         index_errors = [e for e in cached.get("errors", []) if e.get("file") == origin]
@@ -407,6 +422,7 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             "modified": target.stat().st_mtime,
             "sha256": digest,
             "tags": tags,
+            "collection": collection,
             "duplicates": duplicates,
             "pages": len(records),
             "chunks": len(chunks),
@@ -415,6 +431,31 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             "status": status,
             "index_errors": index_errors,
         }
+
+    @app.put("/api/documents/{folder}/{name}/collection")
+    def set_document_collection(folder: str, name: str,
+                                body: CollectionRequest) -> dict:
+        """Assign a document to a named collection (``None`` clears it)."""
+        if folder == data_path.name:
+            base = data_path
+        elif folder == upload_path.name:
+            base = upload_path
+        else:
+            raise HTTPException(status_code=404, detail=f"unknown folder: {folder}")
+        if Path(name).name != name:
+            raise HTTPException(status_code=400, detail="name must be a plain filename")
+        if not (base / name).is_file():
+            raise HTTPException(status_code=404, detail=f"no such document: {folder}/{name}")
+
+        origin = f"{folder}/{name}"
+        all_collections = load_collections(collections_path)
+        names = normalize_tags([body.collection or ""])
+        if names:
+            all_collections[origin] = names[0]
+        else:
+            all_collections.pop(origin, None)
+        save_collections(all_collections, collections_path)
+        return {"origin": origin, "collection": all_collections.get(origin)}
 
     @app.put("/api/documents/{folder}/{name}/tags")
     def set_document_tags(folder: str, name: str, body: TagsRequest) -> dict:

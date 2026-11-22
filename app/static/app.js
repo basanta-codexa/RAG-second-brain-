@@ -7,7 +7,7 @@ const byName = (n) => $(`input[name="mode"][value="${n}"]`);
 
 const state = {
   documents: 0, allowAI: false, sources: [], lastAnswer: null, busy: false,
-  maxUploadBytes: null, history: [],
+  maxUploadBytes: null, history: [], collections: {},
 };
 
 const el = {
@@ -25,11 +25,13 @@ const el = {
   uploadList: $('#upload-list'),
   baseList: $('#base-list'),
   clearUploads: $('#clear-uploads'),
+  collectionFilter: $('#collection-filter'),
   docDialog: $('#doc-dialog'),
   docDialogTitle: $('#doc-dialog-title'),
   docDialogClose: $('#doc-dialog-close'),
   docFacts: $('#doc-facts'),
   docTagEditor: $('#doc-tag-editor'),
+  docCollection: $('#doc-collection'),
   docTags: $('#doc-tags'),
   tagForm: $('#tag-form'),
   tagInput: $('#tag-input'),
@@ -208,7 +210,9 @@ async function refreshStatus() {
     const s = await res.json();
     state.documents = s.documents;
     state.sources = s.sources || [];
+    state.collections = s.collections || {};
     state.maxUploadBytes = s.max_upload_bytes ?? null;
+    renderCollections();
     if (el.maxUploadMb && typeof s.max_mb === 'number') {
       el.maxUploadMb.textContent = String(s.max_mb);
     }
@@ -310,12 +314,60 @@ function restoreQuery(item) {
 
 el.historyClear.addEventListener('click', () => saveHistory([]));
 
+function renderCollections() {
+  const names = Array.from(new Set(Object.values(state.collections))).sort();
+  const selects = [el.collectionFilter, el.docCollection].filter(Boolean);
+  for (const select of selects) {
+    const previous = select.value;
+    const label = select === el.docCollection ? 'None' : 'All collections';
+    select.replaceChildren();
+    const all = document.createElement('option');
+    all.value = '';
+    all.textContent = label;
+    select.append(all);
+    for (const name of names) {
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      select.append(option);
+    }
+    select.value = names.includes(previous) ? previous : '';
+  }
+}
+
+el.collectionFilter.addEventListener('change', () => refreshStatus());
+
+async function setDocumentCollection(value) {
+  const url = `/api/documents/${encodeURIComponent(detailRef.folder)}/`
+    + `${encodeURIComponent(detailRef.name)}/collection`;
+  try {
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ collection: value || null }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.detail || `request failed (${res.status})`);
+    if (payload.collection) state.collections[payload.origin] = payload.collection;
+    else delete state.collections[payload.origin];
+    renderCollections();
+    clearNotice(el.tagMessage);
+  } catch (err) {
+    showNotice(el.tagMessage, err.message || 'Could not save collection.', true);
+  }
+}
+
+el.docCollection.addEventListener('change', () => setDocumentCollection(el.docCollection.value));
+
 function renderFileList(list, files, removable, folder) {
   list.replaceChildren();
+  const collection = el.collectionFilter.value;
+  files = files.filter(f => !collection || state.collections[f.origin] === collection);
   if (!files.length) {
     const li = document.createElement('li');
     li.className = 'file-list-empty';
-    li.textContent = removable ? 'Nothing uploaded yet.' : 'The data/ folder is empty.';
+    li.textContent = collection ? 'No documents in this collection.'
+      : removable ? 'Nothing uploaded yet.' : 'The data/ folder is empty.';
     list.appendChild(li);
     return;
   }
@@ -469,6 +521,7 @@ async function openDocumentDetail(folder, name) {
     }
     el.docPreview.textContent = body.preview || '(no extracted text)';
     detailRef = { folder, name, tags: body.tags || [] };
+    el.docCollection.value = body.collection || '';
     el.docTagEditor.hidden = false;
     renderDocTags(detailRef.tags);
     const isPdf = name.toLowerCase().endsWith('.pdf');

@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 TAGS_PATH = Path(".cache") / "document_tags.json"
+COLLECTIONS_PATH = Path(".cache") / "document_collections.json"
 MAX_TAGS = 12
 MAX_TAG_LEN = 32
 _TAG_RE = re.compile(r"^[a-z0-9][a-z0-9 _-]*$")
@@ -53,4 +54,32 @@ def save_tags(tags: dict[str, list[str]], path: Path | None = None) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".tmp")
     tmp.write_text(json.dumps(tags, indent=2), encoding="utf-8")
+    tmp.replace(target)
+
+
+def load_collections(path: Path | None = None) -> dict[str, str]:
+    target = Path(path) if path is not None else COLLECTIONS_PATH
+    if not target.exists():
+        return {}
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    result: dict[str, str] = {}
+    for origin, value in data.items():
+        if not isinstance(origin, str) or not isinstance(value, str):
+            continue
+        names = normalize_tags([value])
+        if names:
+            result[origin] = names[0]
+    return result
+
+
+def save_collections(collections: dict[str, str], path: Path | None = None) -> None:
+    target = Path(path) if path is not None else COLLECTIONS_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_text(json.dumps(collections, indent=2), encoding="utf-8")
     tmp.replace(target)

@@ -482,6 +482,32 @@ def test_tags_round_trip_through_the_api(monkeypatch, client):
     assert client.get("/api/documents/data/a.md").json()["tags"] == ["project one", "roof"]
 
 
+def test_collection_round_trip_through_the_api(monkeypatch, client):
+    stored: dict = {}
+    monkeypatch.setattr("app.main.load_collections", lambda path: dict(stored))
+
+    def fake_save(collections, path):
+        stored.clear()
+        stored.update(collections)
+
+    monkeypatch.setattr("app.main.save_collections", fake_save)
+    data_dir = Path(client.app.state.data_dir)
+    (data_dir / "a.md").write_text("alpha", encoding="utf-8")
+
+    res = client.put("/api/documents/data/a.md/collection",
+                     json={"collection": "Work Project"})
+
+    assert res.status_code == 200
+    assert res.json()["collection"] == "work project"
+    assert client.get("/api/documents/data/a.md").json()["collection"] == "work project"
+    assert client.get("/api/status").json()["collections"] == {
+        "data/a.md": "work project",
+    }
+
+    cleared = client.put("/api/documents/data/a.md/collection", json={"collection": None})
+    assert cleared.json()["collection"] is None
+
+
 def test_busy_index_returns_409(monkeypatch, client):
     client.post("/api/upload", files={"file": ("notes.txt", b"alpha beta gamma", "text/plain")})
 

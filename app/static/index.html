@@ -77,6 +77,13 @@
         </form>
         <p id="upload-message" class="notice" role="status" hidden></p>
 
+        <div class="collection-filter">
+          <label class="field-label" for="collection-filter">Collection</label>
+          <select id="collection-filter">
+            <option value="">All collections</option>
+          </select>
+        </div>
+
         <div class="files-block">
           <div class="files-head">
             <h3>Uploaded</h3>
@@ -256,6 +263,10 @@
       </div>
       <dl id="doc-facts" class="doc-facts"></dl>
       <div id="doc-tag-editor" class="doc-tag-editor" hidden>
+        <div class="collection-editor">
+          <label class="field-label" for="doc-collection">Collection</label>
+          <select id="doc-collection"><option value="">None</option></select>
+        </div>
         <h3>Tags</h3>
         <div id="doc-tags" class="tag-list"></div>
         <form id="tag-form" class="tag-form">
