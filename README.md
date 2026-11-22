@@ -103,6 +103,8 @@ python evaluate.py --k 3 --chunk-mode token --json token.json
 Switching mode changes the index signature and forces a full rebuild; results
 from the previous mode are not comparable until you re-run the evaluator. The
 historical numbers in `docs/retrieval-evaluation.md` were measured with `char`.
+A first A/B run is recorded in [docs/chunking-experiment.md](docs/chunking-experiment.md);
+`char` won on strict accuracy, so it remains the default.
 
 ## Retrieval modes
 
