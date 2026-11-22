@@ -29,6 +29,11 @@ const el = {
   docDialogTitle: $('#doc-dialog-title'),
   docDialogClose: $('#doc-dialog-close'),
   docFacts: $('#doc-facts'),
+  docTagEditor: $('#doc-tag-editor'),
+  docTags: $('#doc-tags'),
+  tagForm: $('#tag-form'),
+  tagInput: $('#tag-input'),
+  tagMessage: $('#tag-message'),
   docPreview: $('#doc-preview'),
   docDialogError: $('#doc-dialog-error'),
   docPagePreview: $('#doc-page-preview'),
@@ -355,6 +360,59 @@ function renderFileList(list, files, removable, folder) {
   }
 }
 
+let detailRef = { folder: '', name: '', tags: [] };
+
+function renderDocTags(tags) {
+  detailRef.tags = tags;
+  el.docTags.replaceChildren();
+  if (!tags.length) {
+    const empty = document.createElement('span');
+    empty.className = 'tag-empty';
+    empty.textContent = 'No tags yet';
+    el.docTags.append(empty);
+    return;
+  }
+  for (const tag of tags) {
+    const chip = document.createElement('span');
+    chip.className = 'tag-chip';
+    chip.textContent = tag;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'tag-remove';
+    remove.textContent = '×';
+    remove.setAttribute('aria-label', `Remove tag ${tag}`);
+    remove.addEventListener('click', () => saveDocTags(tags.filter(t => t !== tag)));
+    chip.append(remove);
+    el.docTags.append(chip);
+  }
+}
+
+async function saveDocTags(tags) {
+  const url = `/api/documents/${encodeURIComponent(detailRef.folder)}/`
+    + `${encodeURIComponent(detailRef.name)}/tags`;
+  try {
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tags }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.detail || `request failed (${res.status})`);
+    renderDocTags(payload.tags || []);
+    clearNotice(el.tagMessage);
+  } catch (err) {
+    showNotice(el.tagMessage, err.message || 'Could not save tags.', true);
+  }
+}
+
+el.tagForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const value = el.tagInput.value.trim();
+  if (!value) return;
+  el.tagInput.value = '';
+  saveDocTags(detailRef.tags.concat([value]));
+});
+
 let pagePreview = { folder: '', name: '', page: 1, total: 0 };
 
 function renderDocPage() {
@@ -377,6 +435,8 @@ async function openDocumentDetail(folder, name) {
   clearNotice(el.docDialogError);
   el.docDialogTitle.textContent = name;
   el.docFacts.replaceChildren();
+  clearNotice(el.tagMessage);
+  el.docTagEditor.hidden = true;
   el.docPagePreview.hidden = true;
   el.docPageImage.removeAttribute('src');
   el.docPreview.textContent = 'Loading…';
@@ -398,7 +458,7 @@ async function openDocumentDetail(folder, name) {
         ? body.duplicates.join(', ') : 'none'],
       ['Pages', String(body.pages)],
       ['Chunks', String(body.chunks)],
-      ['Indexed', body.indexed ? 'Yes' : 'No'],
+      ['Status', body.status || (body.indexed ? 'indexed' : 'not indexed')],
     ];
     for (const [label, value] of facts) {
       const dt = document.createElement('dt');
@@ -408,6 +468,9 @@ async function openDocumentDetail(folder, name) {
       el.docFacts.append(dt, dd);
     }
     el.docPreview.textContent = body.preview || '(no extracted text)';
+    detailRef = { folder, name, tags: body.tags || [] };
+    el.docTagEditor.hidden = false;
+    renderDocTags(detailRef.tags);
     const isPdf = name.toLowerCase().endsWith('.pdf');
     el.docPagePreview.hidden = !isPdf;
     if (isPdf) {

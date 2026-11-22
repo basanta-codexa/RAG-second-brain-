@@ -361,7 +361,8 @@ def test_multi_upload_reports_per_file_errors(client):
     assert body["errors"][0]["status"] == 400
 
 
-def test_document_detail_reports_pages_chunks_and_preview(client):
+def test_document_detail_reports_pages_chunks_and_preview(monkeypatch, client):
+    monkeypatch.setattr("app.main.load_state_file", lambda: None)
     data_dir = Path(client.app.state.data_dir)
     (data_dir / "notes.md").write_text(
         "hello alpha\n\n<<<PAGE 2>>>\nbeta world", encoding="utf-8")
@@ -377,7 +378,27 @@ def test_document_detail_reports_pages_chunks_and_preview(client):
     assert "<<<PAGE 2>>>" in body["preview"]
     assert len(body["sha256"]) == 64
     assert body["indexed"] is False
+    assert body["status"] == "not indexed"
     assert body["index_errors"] == []
+
+
+def test_document_detail_status_from_saved_state(monkeypatch, client):
+    from qdrant_store import sha256_file
+
+    data_dir = Path(client.app.state.data_dir)
+    path = data_dir / "a.md"
+    path.write_text("alpha content", encoding="utf-8")
+    digest = sha256_file(path)
+
+    monkeypatch.setattr("app.main.load_state_file", lambda: {
+        "files": {"data/a.md": {"sha256": digest, "point_ids": []}},
+    })
+    assert client.get("/api/documents/data/a.md").json()["status"] == "indexed"
+
+    monkeypatch.setattr("app.main.load_state_file", lambda: {
+        "files": {"data/a.md": {"sha256": "old-hash", "point_ids": []}},
+    })
+    assert client.get("/api/documents/data/a.md").json()["status"].startswith("stale")
 
 
 def test_document_detail_for_an_upload(client):
@@ -438,6 +459,27 @@ def test_pdf_page_preview_renders_png(client):
 def test_pdf_page_preview_rejects_invalid_input(client):
     assert client.get("/api/documents/data/nope.pdf/pages/0").status_code == 400
     assert client.get("/api/documents/data/nope.pdf/pages/1").status_code == 404
+
+
+def test_tags_round_trip_through_the_api(monkeypatch, client):
+    stored: dict = {}
+    monkeypatch.setattr("app.main.load_tags", lambda path: dict(stored))
+
+    def fake_save(tags, path):
+        stored.clear()
+        stored.update(tags)
+
+    monkeypatch.setattr("app.main.save_tags", fake_save)
+    data_dir = Path(client.app.state.data_dir)
+    (data_dir / "a.md").write_text("alpha", encoding="utf-8")
+
+    res = client.put("/api/documents/data/a.md/tags", json={
+        "tags": [" Project One ", "roof", "project one", "bad!tag"],
+    })
+
+    assert res.status_code == 200
+    assert res.json()["tags"] == ["project one", "roof"]
+    assert client.get("/api/documents/data/a.md").json()["tags"] == ["project one", "roof"]
 
 
 def test_busy_index_returns_409(monkeypatch, client):

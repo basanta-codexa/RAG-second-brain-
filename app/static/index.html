@@ -255,6 +255,16 @@
         <button class="btn btn-ghost" id="doc-dialog-close" type="button">Close</button>
       </div>
       <dl id="doc-facts" class="doc-facts"></dl>
+      <div id="doc-tag-editor" class="doc-tag-editor" hidden>
+        <h3>Tags</h3>
+        <div id="doc-tags" class="tag-list"></div>
+        <form id="tag-form" class="tag-form">
+          <input id="tag-input" type="text" maxlength="32" placeholder="Add a tag"
+                 aria-label="New tag" />
+          <button class="btn btn-ghost" type="submit">Add</button>
+        </form>
+        <p id="tag-message" class="notice" role="status" hidden></p>
+      </div>
       <div id="doc-page-preview" class="doc-page-preview" hidden>
         <div class="doc-page-head">
           <button class="btn btn-ghost" id="doc-page-prev" type="button">Previous</button>

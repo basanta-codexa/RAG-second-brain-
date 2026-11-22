@@ -41,7 +41,8 @@ import search as srch
 from app import generate
 from chunker import chunk_records
 from loader import SUPPORTED_SUFFIXES, load_pdf, load_text
-from qdrant_store import Store, StoreUnavailable, sha256_file
+from metadata import TAGS_PATH, load_tags, normalize_tags, save_tags
+from qdrant_store import Store, StoreUnavailable, load_state_file, sha256_file
 
 logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -82,6 +83,10 @@ class SearchRequest(BaseModel):
 
 class AnswerRequest(SearchRequest):
     consent: bool  # must be True; the UI sets it from the session-wide toggle
+
+
+class TagsRequest(BaseModel):
+    tags: list[str] = Field(default_factory=list, max_length=12)
 
 
 def sanitize_filename(raw: str) -> str:
@@ -139,6 +144,7 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
     max_bytes = (int(max_mb or os.getenv("SECOND_BRAIN_MAX_MB", "25")) * 1024 * 1024)
     chunk_size = int(chunk_size or os.getenv("SECOND_BRAIN_CHUNK_SIZE", srch.DEFAULT_CHUNK_SIZE))
     overlap = int(overlap or os.getenv("SECOND_BRAIN_OVERLAP", srch.DEFAULT_OVERLAP))
+    tags_path = Path(os.getenv("SECOND_BRAIN_TAGS", str(TAGS_PATH)))
     chunk_mode = chunk_mode or os.getenv("SECOND_BRAIN_CHUNK_MODE", srch.DEFAULT_CHUNK_MODE)
     token_size = int(token_size or os.getenv("SECOND_BRAIN_TOKEN_SIZE", srch.DEFAULT_TOKEN_SIZE))
     token_overlap = int(
@@ -370,7 +376,18 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             raise HTTPException(status_code=422, detail=f"could not read document: {exc}") from exc
 
         origin = f"{folder}/{name}"
+        tags = load_tags(tags_path).get(origin, [])
         cached = index_cache["index"] or {}
+        state_entry = (load_state_file() or {}).get("files", {}).get(origin)
+        index_errors = [e for e in cached.get("errors", []) if e.get("file") == origin]
+        if index_errors:
+            status = "error"
+        elif state_entry is None:
+            status = "not indexed"
+        elif state_entry.get("sha256") == digest:
+            status = "indexed"
+        else:
+            status = "stale — will re-embed on the next search"
         preview = "\n\n".join(f"<<<PAGE {r['page']}>>>\n{r['text']}" for r in records[:2])
 
         duplicates = []
@@ -389,13 +406,35 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
             "bytes": target.stat().st_size,
             "modified": target.stat().st_mtime,
             "sha256": digest,
+            "tags": tags,
             "duplicates": duplicates,
             "pages": len(records),
             "chunks": len(chunks),
             "preview": preview[:2000],
             "indexed": any(c.get("origin") == origin for c in cached.get("chunks", [])),
-            "index_errors": [e for e in cached.get("errors", []) if e.get("file") == origin],
+            "status": status,
+            "index_errors": index_errors,
         }
+
+    @app.put("/api/documents/{folder}/{name}/tags")
+    def set_document_tags(folder: str, name: str, body: TagsRequest) -> dict:
+        """Replace the tags for one document. Does not affect the index."""
+        if folder == data_path.name:
+            base = data_path
+        elif folder == upload_path.name:
+            base = upload_path
+        else:
+            raise HTTPException(status_code=404, detail=f"unknown folder: {folder}")
+        if Path(name).name != name:
+            raise HTTPException(status_code=400, detail="name must be a plain filename")
+        if not (base / name).is_file():
+            raise HTTPException(status_code=404, detail=f"no such document: {folder}/{name}")
+
+        origin = f"{folder}/{name}"
+        all_tags = load_tags(tags_path)
+        all_tags[origin] = normalize_tags(body.tags)
+        save_tags(all_tags, tags_path)
+        return {"origin": origin, "tags": all_tags[origin]}
 
     @app.get("/api/documents/{folder}/{name}/pages/{page}")
     def document_page(folder: str, name: str, page: int) -> Response:

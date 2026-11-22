@@ -40,7 +40,7 @@ second-brain-evaluate = "evaluate:main"
 
 [tool.setuptools]
 py-modules = [
-    "chunker", "evaluate", "inspect_chunks", "loader",
+    "chunker", "evaluate", "inspect_chunks", "loader", "metadata",
     "qdrant_store", "search", "testset", "transcribe",
 ]
 
