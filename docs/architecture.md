@@ -39,8 +39,10 @@ flowchart LR
 `qdrant_store.plan()` is pure. Its inputs are current file hashes, the saved
 state, an index signature, and whether the collection exists. Its outputs are
 the files to embed, the point IDs to drop, and a rebuild flag. The signature
-includes the schema version, embedding model, chunk size, and overlap, so a
-configuration change forces a rebuild rather than mixing vector spaces.
+includes the schema version, embedding model, chunk size, and overlap, plus
+chunk mode and token settings when `token` mode is used, so a configuration
+change forces a rebuild rather than mixing vector spaces. The `char` chunker
+keeps its old signature so existing state stays valid.
 
 The write sequence in `search.create_index()` is ordered for crash safety:
 

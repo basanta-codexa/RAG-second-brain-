@@ -87,6 +87,23 @@ flowchart LR
 
 Details are in [docs/architecture.md](docs/architecture.md).
 
+## Chunking experiments
+
+Two chunkers are available. `char` (default) is sentence-aware and counts
+characters; `token` uses the embedding model's tokenizer so chunks stay within
+a token budget and never cut mid-token.
+
+```powershell
+python chunker.py --folder data --chunk-mode char --show 3
+python chunker.py --folder data --chunk-mode token --token-size 256 --token-overlap 48
+python evaluate.py --k 3 --chunk-mode char --json char.json
+python evaluate.py --k 3 --chunk-mode token --json token.json
+```
+
+Switching mode changes the index signature and forces a full rebuild; results
+from the previous mode are not comparable until you re-run the evaluator. The
+historical numbers in `docs/retrieval-evaluation.md` were measured with `char`.
+
 ## Retrieval modes
 
 | Mode | Behavior |
@@ -149,6 +166,9 @@ Read from the environment or a `.env` file in the project root.
 | `SECOND_BRAIN_RERANKER` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Reranker model |
 | `SECOND_BRAIN_CHUNK_SIZE` | `800` | Chunk size, characters |
 | `SECOND_BRAIN_OVERLAP` | `150` | Chunk overlap, characters |
+| `SECOND_BRAIN_CHUNK_MODE` | `char` | `char` or `token` chunking |
+| `SECOND_BRAIN_TOKEN_SIZE` | `256` | Tokens per chunk in `token` mode |
+| `SECOND_BRAIN_TOKEN_OVERLAP` | `48` | Token overlap in `token` mode |
 | `SECOND_BRAIN_MAX_MB` | `25` | Upload limit |
 | `SECOND_BRAIN_QDRANT` | `http://127.0.0.1:6333` | Qdrant endpoint |
 | `SECOND_BRAIN_LOCK_TIMEOUT` | `600` | Seconds to wait for another index sync |

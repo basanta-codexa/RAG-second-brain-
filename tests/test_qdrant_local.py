@@ -4,6 +4,7 @@ No Docker and no embedding model required: a keyword encoder provides
 deterministic vectors, while the real Store, planner, Qdrant client, filters,
 and state file are exercised.
 """
+import re
 from pathlib import Path
 
 import numpy as np
@@ -154,6 +155,31 @@ def test_large_deletes_are_split_into_batches(tmp_path: Path, monkeypatch):
     store.delete_points(ids)
 
     assert sizes == [qdrant_store.DELETE_BATCH, 44]
+
+
+def test_token_chunking_flows_through_create_index(tmp_path: Path, monkeypatch):
+    store = make_store(tmp_path)
+    monkeypatch.setattr("search.Store", lambda *args, **kwargs: store)
+    data = tmp_path / "data"
+    write(data / "a.md", "alpha. " * 400)
+
+    class Tokenizer:
+        def __call__(self, text, add_special_tokens=False):
+            return {"offset_mapping": [(m.start(), m.end())
+                                       for m in re.finditer(r"\S+", text)]}
+
+    class TokenEncoder(KeywordEncoder):
+        tokenizer = Tokenizer()
+
+    index = search.create_index(
+        str(data), "m1", chunk_size=800, overlap=150,
+        encoder=TokenEncoder(), chunk_mode="token",
+        token_size=32, token_overlap=8,
+    )
+
+    assert index["errors"] == []
+    assert store.count() > 0
+    assert store.load_state()["signature"]["chunk_mode"] == "token"
 
 
 def test_sync_reports_a_lock_held_by_another_process(tmp_path: Path, monkeypatch):

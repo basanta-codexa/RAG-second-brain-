@@ -70,14 +70,24 @@ def point_id(chunk_id: str) -> str:
     return str(uuid.uuid5(_NAMESPACE, chunk_id))
 
 
-def index_signature(model_name: str, chunk_size: int, overlap: int) -> dict:
+def index_signature(model_name: str, chunk_size: int, overlap: int,
+                    chunk_mode: str = "char", token_size: int | None = None,
+                    token_overlap: int | None = None) -> dict:
     """Everything that changes the meaning of a stored vector or chunk id."""
-    return {
+    signature = {
         "schema": SCHEMA_VERSION,
         "model": model_name,
         "chunk_size": chunk_size,
         "overlap": overlap,
     }
+    # Char mode keeps its old signature so existing state stays valid.
+    if chunk_mode != "char":
+        signature.update({
+            "chunk_mode": chunk_mode,
+            "token_size": token_size,
+            "token_overlap": token_overlap,
+        })
+    return signature
 
 
 def _valid_state(state: dict | None) -> bool:

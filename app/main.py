@@ -128,7 +128,10 @@ def file_info(path: Path, origin: str) -> dict:
 def create_app(data_dir: str | None = None, upload_dir: str | None = None,
                model_name: str | None = None, max_mb: int | None = None,
                chunk_size: int | None = None, overlap: int | None = None,
-               reranker_model: str | None = None) -> FastAPI:
+               reranker_model: str | None = None,
+               chunk_mode: str | None = None,
+               token_size: int | None = None,
+               token_overlap: int | None = None) -> FastAPI:
     data_path = Path(data_dir or os.getenv("SECOND_BRAIN_DATA", "data"))
     upload_path = Path(upload_dir or os.getenv("SECOND_BRAIN_UPLOADS", "uploads"))
     model = model_name or os.getenv("SECOND_BRAIN_MODEL", srch.DEFAULT_MODEL)
@@ -136,6 +139,10 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
     max_bytes = (int(max_mb or os.getenv("SECOND_BRAIN_MAX_MB", "25")) * 1024 * 1024)
     chunk_size = int(chunk_size or os.getenv("SECOND_BRAIN_CHUNK_SIZE", srch.DEFAULT_CHUNK_SIZE))
     overlap = int(overlap or os.getenv("SECOND_BRAIN_OVERLAP", srch.DEFAULT_OVERLAP))
+    chunk_mode = chunk_mode or os.getenv("SECOND_BRAIN_CHUNK_MODE", srch.DEFAULT_CHUNK_MODE)
+    token_size = int(token_size or os.getenv("SECOND_BRAIN_TOKEN_SIZE", srch.DEFAULT_TOKEN_SIZE))
+    token_overlap = int(
+        token_overlap or os.getenv("SECOND_BRAIN_TOKEN_OVERLAP", srch.DEFAULT_TOKEN_OVERLAP))
 
     # Loading PyTorch + 400 MB of weights takes ~8s — do it once per process,
     # and reuse it for every query (not every request).
@@ -217,10 +224,11 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
         )
 
     def current_cache_key() -> tuple:
-        return (
-            str(data_path), str(upload_path), model, chunk_size, overlap,
-            directory_token(data_path), directory_token(upload_path),
-        )
+        config = (str(data_path), str(upload_path), model, chunk_size,
+                  overlap, chunk_mode)
+        if chunk_mode == "token":
+            config += (token_size, token_overlap)
+        return config + (directory_token(data_path), directory_token(upload_path))
 
     def invalidate_index() -> None:
         index_cache["key"] = None
@@ -253,6 +261,8 @@ def create_app(data_dir: str | None = None, upload_dir: str | None = None,
                 [str(data_path), str(upload_path)], model, chunk_size, overlap,
                 reranker_model=reranker, lock_timeout=WEB_LOCK_TIMEOUT,
                 encoder=index_cache["encoder"],
+                chunk_mode=chunk_mode, token_size=token_size,
+                token_overlap=token_overlap,
             )
             # create_index returns the encoder it used; reuse it on the next
             # sync instead of loading the model a second time per request.

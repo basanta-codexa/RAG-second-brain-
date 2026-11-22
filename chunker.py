@@ -44,11 +44,67 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150) -> list[str
     return chunks
 
 
-def chunk_records(records: list[dict], chunk_size: int = 800, overlap: int = 150) -> list[dict]:
+def chunk_text_tokens(text: str, tokenizer, token_size: int = 256,
+                      token_overlap: int = 48) -> list[str]:
+    """Split by tokenizer offsets, preferring sentence ends at window edges.
+
+    ``tokenizer`` is a Hugging Face-style callable returning ``offset_mapping``.
+    Offsets keep cuts between tokens instead of mid-word.
+    """
+    if token_size <= 0:
+        raise ValueError("token_size must be > 0")
+    if token_overlap < 0:
+        raise ValueError("token_overlap must be >= 0")
+    if token_overlap >= token_size:
+        raise ValueError("token_overlap must be smaller than token_size")
+
+    text = " ".join(text.split())
+    if not text:
+        return []
+    mapping = tokenizer(text, add_special_tokens=False).get("offset_mapping") or []
+    offsets = [(int(a), int(b)) for a, b in mapping if b > a]
+    if not offsets:
+        return chunk_text(text, token_size * 4, token_overlap * 4)
+
+    chunks: list[str] = []
+    start = 0
+    while start < len(offsets):
+        end = min(start + token_size, len(offsets))
+        if end < len(offsets):
+            char_from = offsets[start + token_size // 2][0]
+            char_to = offsets[end - 1][1]
+            cut = None
+            for match in _SENTENCE_END.finditer(text, char_from, char_to):
+                cut = match.end()
+            if cut is not None and cut < char_to:
+                end = next(
+                    (i for i in range(start + token_size // 2, end)
+                     if offsets[i][1] >= cut),
+                    end,
+                )
+        chunk = text[offsets[start][0]:offsets[end - 1][1]].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= len(offsets):
+            break
+        start = max(end - token_overlap, start + 1)
+    return chunks
+
+
+def chunk_records(records: list[dict], chunk_size: int = 800, overlap: int = 150,
+                  chunk_mode: str = "char", tokenizer=None,
+                  token_size: int = 256, token_overlap: int = 48) -> list[dict]:
     """Turn page-level records into chunk-level records, keeping metadata."""
+    if chunk_mode not in ("char", "token"):
+        raise ValueError(f"unknown chunk_mode: {chunk_mode}")
     all_chunks: list[dict] = []
     for rec in records:
-        pieces = chunk_text(rec["text"], chunk_size, overlap)
+        if chunk_mode == "token":
+            if tokenizer is None:
+                raise ValueError("token chunking requires a tokenizer")
+            pieces = chunk_text_tokens(rec["text"], tokenizer, token_size, token_overlap)
+        else:
+            pieces = chunk_text(rec["text"], chunk_size, overlap)
         origin = rec.get("origin") or rec["source"]
         for i, piece in enumerate(pieces):
             all_chunks.append({
@@ -66,11 +122,29 @@ def main() -> None:
     parser.add_argument("--folder", default="data", help="folder to load (default: data)")
     parser.add_argument("--chunk-size", type=int, default=800, help="chunk size in characters")
     parser.add_argument("--overlap", type=int, default=150, help="overlap in characters")
+    parser.add_argument("--chunk-mode", choices=("char", "token"), default="char",
+                        help="char (default) or embedding-tokenizer based")
+    parser.add_argument("--token-size", type=int, default=256, help="tokens per chunk")
+    parser.add_argument("--token-overlap", type=int, default=48, help="token overlap")
+    parser.add_argument("--model", default=None, help="model for the token tokenizer")
     parser.add_argument("--show", type=int, default=3, help="number of sample chunks to print")
     args = parser.parse_args()
 
+    tokenizer = None
+    if args.chunk_mode == "token":
+        import os
+
+        from search import DEFAULT_MODEL, load_encoder
+
+        model = args.model or os.getenv("SECOND_BRAIN_MODEL") or DEFAULT_MODEL
+        tokenizer = load_encoder(model).tokenizer
+
     records = load_folder(args.folder)
-    chunks = chunk_records(records, args.chunk_size, args.overlap)
+    chunks = chunk_records(
+        records, args.chunk_size, args.overlap,
+        chunk_mode=args.chunk_mode, tokenizer=tokenizer,
+        token_size=args.token_size, token_overlap=args.token_overlap,
+    )
     print(f"{len(records)} pages -> {len(chunks)} chunks")
     if not chunks:
         print("No chunks produced (nothing with readable text in the folder).")

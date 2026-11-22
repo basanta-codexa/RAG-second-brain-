@@ -45,6 +45,9 @@ DEFAULT_MODEL = "BAAI/bge-base-en-v1.5"
 DEFAULT_CHUNK_SIZE = 800      # BGE-en reads ~512 tokens; keep chunks modest
 DEFAULT_OVERLAP = 150
 DEFAULT_TOP_K = 3
+DEFAULT_CHUNK_MODE = "char"
+DEFAULT_TOKEN_SIZE = 256       # BGE-en is trained for ~512 tokens; 256 is safe
+DEFAULT_TOKEN_OVERLAP = 48
 PROGRESS_PATH = Path(".cache") / "index_progress.json"
 
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
@@ -208,11 +211,18 @@ def _load_one(path: Path, origin: str) -> list[dict]:
 
 def _embed_files(store: Store, files: list[tuple[str, Path]], model_name: str,
                  chunk_size: int, overlap: int,
-                 encoder: SentenceTransformer | None = None
+                 encoder: SentenceTransformer | None = None,
+                 chunk_mode: str = DEFAULT_CHUNK_MODE,
+                 token_size: int = DEFAULT_TOKEN_SIZE,
+                 token_overlap: int = DEFAULT_TOKEN_OVERLAP,
                  ) -> tuple[dict[str, dict], list[dict], Any]:
     """Read, chunk, embed and upsert. A broken file is reported, not fatal."""
     if not files:
         return {}, [], encoder
+
+    # Load once here: token chunking needs the model's tokenizer up front.
+    model = encoder or load_encoder(model_name)
+    tokenizer = getattr(model, "tokenizer", None) if chunk_mode == "token" else None
 
     # Phase 1: read + chunk everything first, so the total is known up front
     prepared = []
@@ -225,7 +235,11 @@ def _embed_files(store: Store, files: list[tuple[str, Path]], model_name: str,
         try:
             records = _load_one(path, key)
             hashed = sha256_file(path)
-            chunks = chunk_records(records, chunk_size, overlap)
+            chunks = chunk_records(
+                records, chunk_size, overlap,
+                chunk_mode=chunk_mode, tokenizer=tokenizer,
+                token_size=token_size, token_overlap=token_overlap,
+            )
         except Exception as exc:  # one unreadable file must not kill the corpus
             errors.append({"file": key, "error": f"{type(exc).__name__}: {exc}"})
             print(f"  {key}: skipped ({type(exc).__name__}: {exc})", file=sys.stderr)
@@ -237,7 +251,6 @@ def _embed_files(store: Store, files: list[tuple[str, Path]], model_name: str,
         return {}, errors, encoder
 
     print(f"embedding {total_chunks} chunks from {len(prepared)} file(s) with {model_name} ...")
-    model = encoder or load_encoder(model_name)
     done: dict[str, dict] = {}
     embedded_so_far = 0
     for i, (key, hashed, chunks) in enumerate(prepared, start=1):
@@ -283,7 +296,10 @@ def create_index(folder: str | list[str] = "data", model_name: str = DEFAULT_MOD
                  rebuild: bool = False,
                  encoder: SentenceTransformer | None = None,
                  reranker_model: str | None = None,
-                 lock_timeout: float | None = None) -> dict:
+                 lock_timeout: float | None = None,
+                 chunk_mode: str = DEFAULT_CHUNK_MODE,
+                 token_size: int = DEFAULT_TOKEN_SIZE,
+                 token_overlap: int = DEFAULT_TOKEN_OVERLAP) -> dict:
     """Sync the Qdrant collection with the current corpus files.
 
     ``folder`` may be one folder or a list; all supported files are merged.
@@ -303,7 +319,8 @@ def create_index(folder: str | list[str] = "data", model_name: str = DEFAULT_MOD
     try:
         with store.lock(timeout=lock_timeout):
             return _sync_index(store, folders, model_name, chunk_size, overlap,
-                               rebuild, encoder, reranker_model)
+                               rebuild, encoder, reranker_model,
+                               chunk_mode, token_size, token_overlap)
     except Timeout as exc:
         raise IndexBusy(
             f"another index sync is running (lock: {store.lock_path()}); "
@@ -314,13 +331,17 @@ def create_index(folder: str | list[str] = "data", model_name: str = DEFAULT_MOD
 def _sync_index(store: Store, folders: list[str], model_name: str,
                 chunk_size: int, overlap: int, rebuild: bool,
                 encoder: SentenceTransformer | None,
-                reranker_model: str | None) -> dict:
+                reranker_model: str | None,
+                chunk_mode: str = DEFAULT_CHUNK_MODE,
+                token_size: int = DEFAULT_TOKEN_SIZE,
+                token_overlap: int = DEFAULT_TOKEN_OVERLAP) -> dict:
     files = _target_files(folders)
     if not files:
         raise RuntimeError(f"no documents in {', '.join(folders)}; is everything empty?")
 
     state = None if rebuild else store.load_state()
-    signature = index_signature(model_name, chunk_size, overlap)
+    signature = index_signature(model_name, chunk_size, overlap,
+                                chunk_mode, token_size, token_overlap)
     plan_result = plan({k: sha256_file(p) for k, p in files.items()},
                        state, signature, store.exists())
 
@@ -342,6 +363,7 @@ def _sync_index(store: Store, folders: list[str], model_name: str,
         updates, errors, encoder_used = _embed_files(
             store, [(k, files[k]) for k in to_embed_keys],
             model_name, chunk_size, overlap, encoder,
+            chunk_mode, token_size, token_overlap,
         )
     finally:
         _clear_progress()
@@ -466,6 +488,14 @@ def main() -> int:
                         default=int(os.getenv("SECOND_BRAIN_CHUNK_SIZE", DEFAULT_CHUNK_SIZE)))
     parser.add_argument("--overlap", type=int,
                         default=int(os.getenv("SECOND_BRAIN_OVERLAP", DEFAULT_OVERLAP)))
+    parser.add_argument("--chunk-mode", choices=("char", "token"),
+                        default=os.getenv("SECOND_BRAIN_CHUNK_MODE", DEFAULT_CHUNK_MODE),
+                        help="character-based (default) or tokenizer-based chunks")
+    parser.add_argument("--token-size", type=int,
+                        default=int(os.getenv("SECOND_BRAIN_TOKEN_SIZE", DEFAULT_TOKEN_SIZE)))
+    parser.add_argument("--token-overlap", type=int,
+                        default=int(os.getenv("SECOND_BRAIN_TOKEN_OVERLAP",
+                                              DEFAULT_TOKEN_OVERLAP)))
     parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
     parser.add_argument("--rebuild", action="store_true", help="drop the collection and re-embed everything")
     parser.add_argument("--no-query-prefix", action="store_true",
@@ -482,7 +512,9 @@ def main() -> int:
     try:
         index = create_index(args.folder, args.model,
                              args.chunk_size, args.overlap, args.rebuild,
-                             reranker_model=args.reranker)
+                             reranker_model=args.reranker,
+                             chunk_mode=args.chunk_mode, token_size=args.token_size,
+                             token_overlap=args.token_overlap)
         encoder = index["encoder"] or load_encoder(args.model)
         use_prefix = False if args.no_query_prefix else None
 

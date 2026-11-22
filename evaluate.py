@@ -99,12 +99,17 @@ def evaluate(folder: str, top_k: int, model_name: str,
              hybrid_rerank: bool = False,
              fail_under: float = 0.0,
              reranker_model: str | None = None,
-             json_path: str | None = None) -> int:
+             json_path: str | None = None,
+             chunk_mode: str = srch.DEFAULT_CHUNK_MODE,
+             token_size: int = srch.DEFAULT_TOKEN_SIZE,
+             token_overlap: int = srch.DEFAULT_TOKEN_OVERLAP) -> int:
     validate_tests(TESTS)
     if hybrid_rerank:
         hybrid = rerank = True
     index = srch.create_index(folder, model_name, chunk_size, overlap, rebuild,
-                              reranker_model=reranker_model)
+                              reranker_model=reranker_model,
+                              chunk_mode=chunk_mode, token_size=token_size,
+                              token_overlap=token_overlap)
     if index["errors"]:
         for err in index["errors"]:
             print(f"INDEX ERROR: {err['file']}: {err['error']}")
@@ -189,6 +194,9 @@ def evaluate(folder: str, top_k: int, model_name: str,
                 "overlap": overlap,
                 "rebuild": rebuild,
                 "mode": mode,
+                "chunk_mode": chunk_mode,
+                "token_size": token_size if chunk_mode == "token" else None,
+                "token_overlap": token_overlap if chunk_mode == "token" else None,
             },
             "counts": {
                 "total": len(TESTS),
@@ -229,6 +237,14 @@ def main() -> int:
                         default=int(os.getenv("SECOND_BRAIN_CHUNK_SIZE", srch.DEFAULT_CHUNK_SIZE)))
     parser.add_argument("--overlap", type=int,
                         default=int(os.getenv("SECOND_BRAIN_OVERLAP", srch.DEFAULT_OVERLAP)))
+    parser.add_argument("--chunk-mode", choices=("char", "token"),
+                        default=os.getenv("SECOND_BRAIN_CHUNK_MODE", srch.DEFAULT_CHUNK_MODE),
+                        help="character-based (default) or tokenizer-based chunks")
+    parser.add_argument("--token-size", type=int,
+                        default=int(os.getenv("SECOND_BRAIN_TOKEN_SIZE", srch.DEFAULT_TOKEN_SIZE)))
+    parser.add_argument("--token-overlap", type=int,
+                        default=int(os.getenv("SECOND_BRAIN_TOKEN_OVERLAP",
+                                              srch.DEFAULT_TOKEN_OVERLAP)))
     parser.add_argument("--rebuild", action="store_true",
                         help="drop the collection and re-embed everything")
     parser.add_argument("--hybrid", action="store_true",
@@ -249,7 +265,9 @@ def main() -> int:
         return evaluate(args.folder, args.k, args.model, args.chunk_size, args.overlap,
                         args.rebuild, hybrid=args.hybrid, rerank=args.rerank,
                         hybrid_rerank=args.hybrid_rerank, fail_under=args.fail_under,
-                        reranker_model=args.reranker, json_path=args.json)
+                        reranker_model=args.reranker, json_path=args.json,
+                        chunk_mode=args.chunk_mode, token_size=args.token_size,
+                        token_overlap=args.token_overlap)
     except (RuntimeError, ValueError, FileNotFoundError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
