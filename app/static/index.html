@@ -158,6 +158,15 @@
           </div>
         </form>
 
+        <section id="history-panel" class="history-panel" aria-labelledby="history-heading" hidden>
+          <div class="history-head">
+            <h3 id="history-heading">Recent questions</h3>
+            <button class="btn btn-ghost" id="history-clear" type="button">Clear</button>
+          </div>
+          <ul id="history-list" class="history-list"></ul>
+          <p class="hint">Kept only in this browser. Click a question to run it again.</p>
+        </section>
+
         <p id="ask-message" class="notice" role="status" hidden></p>
 
         <div id="ask-progress" class="ask-progress" hidden>

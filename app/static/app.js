@@ -7,7 +7,7 @@ const byName = (n) => $(`input[name="mode"][value="${n}"]`);
 
 const state = {
   documents: 0, allowAI: false, sources: [], lastAnswer: null, busy: false,
-  maxUploadBytes: null,
+  maxUploadBytes: null, history: [],
 };
 
 const el = {
@@ -38,6 +38,9 @@ const el = {
   sourceFilter: $('#source-filter'),
   askBtn: $('#ask-btn'),
   askMsg: $('#ask-message'),
+  historyPanel: $('#history-panel'),
+  historyList: $('#history-list'),
+  historyClear: $('#history-clear'),
   results: $('#results'),
   emptyState: $('#empty-state'),
   hitTemplate: $('#hit-template'),
@@ -234,6 +237,68 @@ function renderSourceFilter() {
   }
   el.sourceFilter.value = state.sources.includes(previous) ? previous : '';
 }
+
+/* ---------- conversation history (browser only) ---------- */
+
+const HISTORY_KEY = 'sb-questions';
+const HISTORY_LIMIT = 12;
+
+function loadHistory() {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    const items = raw ? JSON.parse(raw) : [];
+    return Array.isArray(items) ? items.filter(i => i && typeof i.q === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+state.history = loadHistory();
+
+function saveHistory(items) {
+  state.history = items.slice(0, HISTORY_LIMIT);
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(state.history)); } catch { /* private mode */ }
+  renderHistory();
+}
+
+function rememberQuery(question, settings) {
+  const q = question.trim();
+  if (q.length < 3) return;
+  const item = { q, ...settings, at: Date.now() };
+  const rest = state.history.filter(h => h.q !== q || h.mode !== item.mode
+    || h.top_k !== item.top_k || h.source !== item.source);
+  saveHistory([item, ...rest]);
+}
+
+function renderHistory() {
+  el.historyPanel.hidden = state.history.length === 0;
+  el.historyList.replaceChildren();
+  for (const item of state.history) {
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'history-item';
+    btn.textContent = item.q;
+    btn.title = `${item.q}\n${new Date(item.at).toLocaleString()}`;
+    btn.addEventListener('click', () => restoreQuery(item));
+    li.append(btn);
+    el.historyList.appendChild(li);
+  }
+}
+
+function restoreQuery(item) {
+  el.question.value = item.q;
+  const radio = document.querySelector(`input[name="mode"][value="${item.mode}"]`);
+  if (radio) radio.checked = true;
+  if (item.top_k && Array.from(el.topK.options).some(o => o.value === String(item.top_k))) {
+    el.topK.value = String(item.top_k);
+  }
+  el.sourceFilter.value = item.source && state.sources.includes(item.source) ? item.source : '';
+  clearNotice(el.askMsg);
+  el.question.focus();
+  el.questionForm.requestSubmit();
+}
+
+el.historyClear.addEventListener('click', () => saveHistory([]));
 
 function renderFileList(list, files, removable, folder) {
   list.replaceChildren();
@@ -573,6 +638,11 @@ el.questionForm.addEventListener('submit', async (event) => {
         `${payload.hits.length} passage(s) from ${payload.documents} document(s) · ${payload.model}` +
         (el.sourceFilter.value ? ` · filtered to ${el.sourceFilter.value}` : '') + warned,
         warned !== '');
+      rememberQuery(question, {
+        mode: modeOf(),
+        top_k: Number(el.topK.value),
+        source: el.sourceFilter.value || null,
+      });
     }
   } catch (err) {
     resetEmptyState();
@@ -766,7 +836,14 @@ el.answerBtn.addEventListener('click', async () => {
   try {
     const { res, payload } = await requestJson('/api/answer', { ...queryBody(question), consent: true });
     if (!res.ok) handleQueryError(res, payload, el.askMsg);
-    else renderAnswer(payload);
+    else {
+      renderAnswer(payload);
+      rememberQuery(question, {
+        mode: modeOf(),
+        top_k: Number(el.topK.value),
+        source: el.sourceFilter.value || null,
+      });
+    }
   } catch (err) {
     resetEmptyState();
     showNotice(el.askMsg, networkMessage(err), true);
@@ -787,3 +864,4 @@ if (el.themeToggle) {
   el.themeToggle.setAttribute('aria-pressed', String(current === 'dark'));
 }
 refreshStatus();
+renderHistory();

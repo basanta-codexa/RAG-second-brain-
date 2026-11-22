@@ -44,7 +44,8 @@ files at once. Search returns ranked passages with source and page. Click
 and chunk counts, SHA-256, byte-identical duplicates, index status and a short
 extracted-text preview. No answer is generated unless the consent switch is
 enabled. When one is generated, the answer and its supporting passages appear
-side by side; citation chips jump to the matching passage.
+side by side; citation chips jump to the matching passage. Recent questions
+appear as chips you can click to run again.
 
 ![Workbench: upload panel and question form](docs/screenshots/01-workbench.png)
 
@@ -185,6 +186,9 @@ Documents, chunks, and index state stay on this machine. Three exceptions:
 - `transcribe.py` sends rendered page images to Gemini when OCR is used.
 - `/api/answer` sends retrieved passages to Groq after the UI's consent switch
   is enabled.
+
+Recent questions are kept only in this browser's `localStorage`; the **Clear**
+button removes them. They are never sent to the server or a provider.
 
 `docker-compose.yml` sets `QDRANT__TELEMETRY_DISABLED=true` and binds Qdrant's
 REST port to `127.0.0.1`. The web app has no authentication and binds to
